@@ -1,0 +1,70 @@
+# DyadicSync - Dyadic Video Synchronization Experiment System
+# Requirements file for Python dependencies
+#
+# Installation: pip install -r requirements.txt
+# Recommended Python version: 3.11 (minimum: 3.8)
+
+# ============================================================================
+# CORE DEPENDENCIES
+# ============================================================================
+
+# Video and Audio Playback
+pyglet>=2.0.0              # Video rendering and window management
+sounddevice>=0.4.6         # Audio device routing and playback
+soundfile>=0.12.1          # Audio file reading (WAV support)
+ffmpeg-python>=0.2.0       # Audio extraction from video files
+
+# Data Processing
+numpy>=1.23.0              # Numerical operations and array handling
+pandas>=1.5.0              # CSV loading and data management
+
+# Lab Streaming Layer (LSL)
+pylsl>=1.16.0              # Event markers and synchronization with EEG systems
+
+# ============================================================================
+# GUI DEPENDENCIES
+# ============================================================================
+
+# Tkinter is included with Python standard library (no installation needed)
+Pillow>=9.0.0              # Image display in GUI components
+
+# ============================================================================
+# UTILITY DEPENDENCIES
+# ============================================================================
+
+keyboard>=0.13.5           # Keyboard event detection (used in utilities)
+
+# ============================================================================
+# DEVELOPMENT & TESTING DEPENDENCIES
+# ============================================================================
+
+# Testing Framework
+pytest>=7.0.0              # Unit and integration testing
+pytest-cov>=4.0.0          # Test coverage reporting
+
+# Code Quality
+black>=22.0.0              # Code formatting (optional)
+mypy>=0.990                # Type checking (optional)
+
+# ============================================================================
+# NOTES
+# ============================================================================
+
+# FFmpeg Binary Required:
+# This package requires FFmpeg binaries to be installed on your system.
+# See FFMPEG_SETUP.md for installation instructions.
+#
+# Windows: Download from https://www.gyan.dev/ffmpeg/builds/
+# macOS: brew install ffmpeg
+# Linux: sudo apt install ffmpeg
+
+# Platform Notes:
+# - Tested on Windows with Python 3.11
+# - Multi-screen fullscreen behavior may vary on different platforms
+# - Audio device indices are system-specific (use utilities/audioscan.py)
+
+# Conda Environment:
+# If using conda, you can create the environment with:
+# conda create -n VideoEEG python=3.11
+# conda activate VideoEEG
+# pip install -r requirements.txt
