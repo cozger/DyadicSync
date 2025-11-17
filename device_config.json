@@ -1,0 +1,24 @@
+{
+    "version": "1.0",
+    "last_modified": "2025-11-15T14:11:55.980712",
+    "displays": {
+        "control_monitor": null,
+        "participant_1_monitor": 0,
+        "participant_2_monitor": null
+    },
+    "audio": {
+        "participant_1_output": null,
+        "participant_2_output": null,
+        "participant_1_input": null,
+        "participant_2_input": null
+    },
+    "experiment": {
+        "baseline_length": 240,
+        "csv_path": "D:/Projects/DyadicSync/video_pairs-quick.csv"
+    },
+    "gui": {
+        "theme": "dark",
+        "left_panel_collapsed": false,
+        "right_panel_collapsed": false
+    }
+}

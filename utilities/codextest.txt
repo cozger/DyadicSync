@@ -1,0 +1,17 @@
+import os
+import pyglet
+
+# Set FFmpeg path (replace with your actual path to ffmpeg.exe)
+os.environ['FFMPEG_BINARY'] = r'C:\path\to\ffmpeg\bin\ffmpeg.exe'
+
+# Now try to open the video again
+video_path = r'C:\path\to\your\video.mp4'
+window = pyglet.window.Window()
+
+# Load and play video
+media_player = pyglet.media.Player()
+source = pyglet.media.load(video_path)
+media_player.queue(source)
+media_player.play()
+
+pyglet.app.run()

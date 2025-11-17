@@ -1,0 +1,96 @@
+{
+  "version": "2.0",
+  "markers": [
+    {
+      "name": "Trial Start",
+      "description": "Trial begin (all trials start simultaneously)",
+      "template_pattern": "100#",
+      "code": 1000,
+      "marker_type": "integer"
+    },
+    {
+      "name": "P1 Video End",
+      "description": "Video playback end for participant 1",
+      "template_pattern": "210#",
+      "code": 2100,
+      "marker_type": "integer"
+    },
+    {
+      "name": "P2 Video End",
+      "description": "Video playback end for participant 2",
+      "template_pattern": "220#",
+      "code": 2200,
+      "marker_type": "integer"
+    },
+    {
+      "name": "Baseline Start",
+      "description": "Baseline fixation cross start",
+      "template_pattern": null,
+      "code": 8888,
+      "marker_type": "integer"
+    },
+    {
+      "name": "Headset B16 to P1",
+      "description": "Participant 1 assigned headset B16",
+      "template_pattern": null,
+      "code": 9161,
+      "marker_type": "integer"
+    },
+    {
+      "name": "Headset B16 to P2",
+      "description": "Participant 1 assigned other headset, P2 is B16",
+      "template_pattern": null,
+      "code": 9162,
+      "marker_type": "integer"
+    },
+    {
+      "name": "Baseline End",
+      "description": "Baseline fixation cross end",
+      "template_pattern": null,
+      "code": 9999,
+      "marker_type": "integer"
+    },
+    {
+      "name": "P1 Rating",
+      "description": "Rating response for participant 1 (trial + rating)",
+      "template_pattern": "300#0$",
+      "code": 30000,
+      "marker_type": "integer"
+    },
+    {
+      "name": "P2 Rating",
+      "description": "Rating response for participant 2 (trial + rating)",
+      "template_pattern": "500#0$",
+      "code": 50000,
+      "marker_type": "integer"
+    },
+    {
+      "name": "Trial Start (by type)",
+      "description": "Trial start with emotion type",
+      "template_pattern": "trial_{trial_index}_{type}",
+      "code": null,
+      "marker_type": "string"
+    },
+    {
+      "name": "Video Complete (type + condition)",
+      "description": "Both videos complete with type and condition info",
+      "template_pattern": "{type}_{condition}_complete",
+      "code": null,
+      "marker_type": "string"
+    },
+    {
+      "name": "Video End (by type)",
+      "description": "Video playback end with emotion type",
+      "template_pattern": "{type}_end",
+      "code": null,
+      "marker_type": "string"
+    },
+    {
+      "name": "Video Start (by type)",
+      "description": "Video playback start with emotion type",
+      "template_pattern": "{type}_start",
+      "code": null,
+      "marker_type": "string"
+    }
+  ]
+}

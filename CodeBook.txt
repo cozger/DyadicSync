@@ -1,0 +1,19 @@
+# denotes changing integer based on trial number or participant rating response
+
+
+9161:	Participant 1 assigned headset B16
+9162:	Participant 1 assigned other headset, Pt2 is B16
+
+8888: Baseline fixation cross start
+9999: Baseline fixation cross end
+
+100#: Trial begin. All trials will begin at the same time, and therefore single marker for trial starts. # will consecutively increase, marking trial number on the first digit. 
+
+210#: Video playback end for participant 1 for each trial. Independent of response.
+220#: Video playback end for participant 2 for each trial. 
+
+300#0$: Rating response press for participant 1. # will increase with trial number, while $ will always be between 1 and 7.
+500#0$: Rating response press for participant 2
+
+example: 300507, a 7 rating for trial 5 in participant 1
+
