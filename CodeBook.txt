@@ -1,8 +1,13 @@
 # denotes changing integer based on trial number or participant rating response
 
 
-9161:	Participant 1 assigned headset B16
-9162:	Participant 1 assigned other headset, Pt2 is B16
+HEADSET ASSIGNMENT (LSL Stream Metadata):
+  Stream: ExpEvent_Markers
+  Location: XDF file header → stream metadata → <desc>/<participant_1>/<headset_id>
+  Format: XML metadata with values 'B16' or 'B1A'
+  Participant 1: <participant_1><headset_id>B16</headset_id></participant_1>
+  Participant 2: <participant_2><headset_id>B1A</headset_id></participant_2>
+  Note: Stored in XDF header, cannot be missed
 
 8888: Baseline fixation cross start
 9999: Baseline fixation cross end

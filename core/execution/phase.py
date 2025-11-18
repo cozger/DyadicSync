@@ -185,12 +185,20 @@ class Phase(ABC):
         """
         Get template variables required by this phase.
 
+        Includes variables from:
+        - Phase configuration (overridden by subclasses)
+        - Marker binding templates
+
         Returns:
-            Set of variable names (e.g., {'video1', 'video2'})
+            Set of variable names required in CSV (e.g., {'video1', 'type', 'condition'})
         """
-        # Default: no variables
-        # Subclasses override if they use templates
-        return set()
+        # Extract variables from marker binding templates
+        variables = set()
+        for binding in self.marker_bindings:
+            variables.update(self._extract_variables_from_marker_template(binding.marker_template))
+
+        # Subclasses should call super() and add their own phase-specific variables
+        return variables
 
     def set_marker_logger(self, marker_logger):
         """
@@ -229,11 +237,27 @@ class Phase(ABC):
             send_marker(outlet, 1001, event_type="video_start", trial_index=1)  # With context
         """
         if lsl_outlet:
-            # LSL supports both int and string markers
-            if isinstance(marker, int):
-                lsl_outlet.push_sample([marker])
-            else:
-                lsl_outlet.push_sample([str(marker)])
+            # DEBUG: Show marker details before sending
+            marker_type = "integer" if isinstance(marker, int) else "string"
+            marker_str = str(marker)
+            context_parts = []
+            if event_type:
+                context_parts.append(f"event='{event_type}'")
+            if trial_index is not None:
+                context_parts.append(f"trial={trial_index}")
+            if participant is not None:
+                context_parts.append(f"P{participant}")
+            if additional_data:
+                context_parts.append(f"data={additional_data}")
+            context_str = ", ".join(context_parts) if context_parts else "no context"
+
+            print(f"[Marker] Sending {marker_type} marker: {marker} → '{marker_str}' ({context_str})")
+
+            # Convert all markers to string (LSL outlet configured as 'string' type)
+            # Integer markers like 8888 auto-convert, string markers work natively
+            lsl_outlet.push_sample([str(marker)])
+
+            print(f"[Marker] ✓ Sent successfully via LSL")
 
             marker_name = self._marker_catalog.get_name(marker)
             logger.info(f"LSL Marker: {marker} ({marker_name})")
@@ -287,6 +311,9 @@ class Phase(ABC):
 
         trial_data = trial_data or {}
 
+        # DEBUG: Show event trigger
+        print(f"[Marker] Event triggered: '{event_type}' with trial_data={trial_data}, kwargs={kwargs}")
+
         # Find all bindings for this event
         matching_bindings = [
             binding for binding in self.marker_bindings
@@ -294,18 +321,27 @@ class Phase(ABC):
         ]
 
         if not matching_bindings:
+            print(f"[Marker] No bindings found for event '{event_type}'")
             logger.debug(f"No marker bindings for event '{event_type}'")
             return
 
+        # DEBUG: Show matching bindings
+        print(f"[Marker] Found {len(matching_bindings)} binding(s) for event '{event_type}'")
+
         # Resolve and send each marker
-        for binding in matching_bindings:
+        for i, binding in enumerate(matching_bindings, 1):
             try:
+                # DEBUG: Show template resolution
+                print(f"[Marker]   Binding {i}/{len(matching_bindings)}: template='{binding.marker_template}', participant={binding.participant}")
+
                 # Resolve template to concrete marker (int or string)
                 marker = resolve_marker_template(
                     binding.marker_template,
                     trial_data=trial_data,
                     response_value=kwargs.get('response_value')
                 )
+
+                print(f"[Marker]   → Resolved to: {marker} (type: {type(marker).__name__})")
 
                 # Send the marker with full context for MarkerLogger
                 self.send_marker(
@@ -327,6 +363,7 @@ class Phase(ABC):
                 )
 
             except ValueError as e:
+                print(f"[Marker] ERROR: Failed to resolve template '{binding.marker_template}': {e}")
                 logger.error(f"Failed to resolve marker template '{binding.marker_template}': {e}")
 
     @abstractmethod
@@ -372,3 +409,39 @@ class Phase(ABC):
         for key, value in data.items():
             result = result.replace(f'{{{key}}}', str(value))
         return result
+
+    # Built-in variables that are auto-provided (not required in CSV)
+    BUILT_IN_VARIABLES = {'trial_index', 'response_value'}
+
+    @staticmethod
+    def _extract_variables_from_marker_template(template: str) -> Set[str]:
+        """
+        Extract required CSV column names from a marker template.
+
+        Handles both integer and string templates:
+        - Integer templates: "100#" requires 'trial_index' (auto-provided, excluded)
+        - String templates: "{type}_start" requires 'type' (from CSV)
+
+        Args:
+            template: Marker template string
+
+        Returns:
+            Set of variable names that must exist in CSV
+            (excludes built-in variables like trial_index, response_value)
+        """
+        variables = set()
+
+        # Detect template type
+        has_curly_braces = '{' in template and '}' in template
+
+        # String template: extract {variable} names
+        if has_curly_braces:
+            variables.update(re.findall(r'\{(\w+)\}', template))
+
+        # Integer templates with # or $ use built-in variables only
+        # (trial_index, response_value) - no CSV columns needed
+
+        # Filter out built-in variables
+        variables -= Phase.BUILT_IN_VARIABLES
+
+        return variables

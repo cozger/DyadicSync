@@ -45,109 +45,96 @@ class FixationPhase(Phase):
         super().__init__(name)
         self.duration = duration
 
-    def execute(self, device_manager, lsl_outlet, trial_data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def execute(self, device_manager, lsl_outlet, trial_data: Optional[Dict[str, Any]] = None,
+                on_complete=None) -> None:
         """
-        Execute fixation phase.
+        Execute fixation phase (non-blocking, callback-based).
 
         Args:
             device_manager: DeviceManager instance
             lsl_outlet: LSL StreamOutlet
             trial_data: Dictionary of trial variables for marker template resolution
-
-        Returns:
-            {'duration': float, 'start_time': float, 'end_time': float}
+            on_complete: Callback function(result_dict) called when phase completes
 
         Events emitted:
             - phase_start: At beginning of fixation display
             - phase_end: At end of fixation display
+
+        Note:
+            This method is non-blocking. It schedules the phase execution and returns immediately.
+            Results are passed to on_complete callback when phase finishes.
         """
         # Send phase_start event markers
         self.send_event_markers("phase_start", lsl_outlet, trial_data)
 
         start_time = time.time()
-        cross1 = None
-        cross2 = None
-        check_time_func = None
-        stage2_callback = None  # MEDIUM PRIORITY FIX #6: Track STAGE 2 callback for cleanup
 
-        try:
-            # Get windows from device manager
-            window1 = device_manager.window1
-            window2 = device_manager.window2
+        # Get windows from device manager
+        window1 = device_manager.window1
+        window2 = device_manager.window2
 
-            # Create cross displays
-            cross1 = self._create_cross_display(window1)
-            cross2 = self._create_cross_display(window2)
+        # CRITICAL: Switch to window1's OpenGL context before creating its graphics
+        window1.switch_to()
+        self.cross1 = self._create_cross_display(window1)
 
-            # Activate crosses
-            cross1.active = True
-            cross2.active = True
+        # CRITICAL: Switch to window2's OpenGL context before creating its graphics
+        window2.switch_to()
+        self.cross2 = self._create_cross_display(window2)
 
-            # Set up draw handlers
-            @window1.event
-            def on_draw():
-                window1.clear()
-                cross1.draw()
+        # Activate crosses
+        self.cross1.active = True
+        self.cross2.active = True
 
-            @window2.event
-            def on_draw():
-                window2.clear()
-                cross2.draw()
+        # Set up draw handlers (reference INSTANCE variables)
+        @window1.event
+        def on_draw():
+            window1.clear()
+            self.cross1.draw()
 
-            # Run for specified duration
-            end_time_target = time.time() + self.duration
+        @window2.event
+        def on_draw():
+            window2.clear()
+            self.cross2.draw()
 
-            def check_time(dt):
-                if time.time() >= end_time_target:
-                    pyglet.clock.unschedule(check_time)
-                    pyglet.app.exit()
+        # Schedule preloading of next phase (if available)
+        end_time_target = time.time() + self.duration
+        self.stage2_callback = None
+        if hasattr(self, '_next_phase') and self._next_phase:
+            self.stage2_callback = self._schedule_preload_stages(start_time, end_time_target)
 
-            check_time_func = check_time
-            pyglet.clock.schedule_interval(check_time_func, 0.01)
-
-            # Phase 3: Schedule preloading of next phase (if available)
-            # STAGE 1 (early): Load resources at T+200ms
-            # STAGE 2 (late): Prepare sync at T-150ms before end
-            if hasattr(self, '_next_phase') and self._next_phase:
-                stage2_callback = self._schedule_preload_stages(start_time, end_time_target)
-
-            pyglet.app.run()
-
+        # Schedule finish callback
+        def finish_phase(dt):
+            """Cleanup and complete phase."""
             end_time = time.time()
 
-        finally:
             # Cleanup: Deactivate crosses
-            if cross1:
-                cross1.active = False
-            if cross2:
-                cross2.active = False
+            self.cross1.active = False
+            self.cross2.active = False
 
-            # Unschedule clock callback
-            if check_time_func:
+            # Unschedule STAGE 2 callback if still pending
+            if self.stage2_callback:
                 try:
-                    pyglet.clock.unschedule(check_time_func)
-                except:
-                    pass
-
-            # MEDIUM PRIORITY FIX #6: Unschedule STAGE 2 callback on interruption
-            if stage2_callback:
-                try:
-                    pyglet.clock.unschedule(stage2_callback)
+                    pyglet.clock.unschedule(self.stage2_callback)
                     logger.debug("FixationPhase: Unscheduled STAGE 2 callback during cleanup")
                 except:
                     pass
 
-            # Remove event handlers (Pyglet doesn't have easy way to remove specific handlers)
-            # They will be replaced on next execution
+            # Send phase_end event markers
+            self.send_event_markers("phase_end", lsl_outlet, trial_data)
 
-        # Send phase_end event markers
-        self.send_event_markers("phase_end", lsl_outlet, trial_data)
+            # Prepare result
+            result = {
+                'duration': end_time - start_time,
+                'start_time': start_time,
+                'end_time': end_time
+            }
 
-        return {
-            'duration': end_time - start_time if 'end_time' in locals() else 0,
-            'start_time': start_time,
-            'end_time': end_time if 'end_time' in locals() else time.time()
-        }
+            # Call completion callback
+            if on_complete:
+                on_complete(result)
+
+        # Schedule phase completion after duration
+        pyglet.clock.schedule_once(finish_phase, self.duration)
 
     def _create_cross_display(self, window):
         """
@@ -311,7 +298,8 @@ class FixationPhase(Phase):
         Returns:
             Set of variable names (e.g., {'duration'})
         """
-        variables = set()
+        # Get marker template variables from parent
+        variables = super().get_required_variables()
 
         # Check if duration is a template
         duration_str = str(self.duration)

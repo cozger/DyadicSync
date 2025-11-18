@@ -70,20 +70,73 @@ class DeviceManager:
             raise RuntimeError(f"Device validation failed: {'; '.join(errors)}")
 
         # Get Pyglet screens
-        display = pyglet.canvas.get_display()
+        display = pyglet.display.get_display()
         screens = display.get_screens()
 
-        # Create fullscreen windows for both participants
-        self.window1 = pyglet.window.Window(
-            fullscreen=True,
-            screen=screens[self.display_p1]
-        )
-        self.window2 = pyglet.window.Window(
-            fullscreen=True,
-            screen=screens[self.display_p2]
-        )
+        print(f"[DeviceManager] Found {len(screens)} screens")
+        for i, screen in enumerate(screens):
+            print(f"[DeviceManager]   Screen {i}: {screen.width}x{screen.height}")
 
-        print(f"[DeviceManager] Windows created on displays {self.display_p1} and {self.display_p2}")
+        # Create fullscreen windows for both participants
+        # Note: set_exclusive_keyboard(False) is critical for multi-window setups
+        # to prevent OpenGL context conflicts on Windows
+        try:
+            print(f"[DeviceManager] Creating window 1 on screen {self.display_p1}...")
+            self.window1 = pyglet.window.Window(
+                fullscreen=True,
+                screen=screens[self.display_p1]
+            )
+            # Disable exclusive keyboard - required for multi-window Pyglet on Windows
+            # Prevents wglChoosePixelFormatARB errors
+            self.window1.set_exclusive_keyboard(False)
+            print(f"[DeviceManager] Window 1 created successfully")
+
+            print(f"[DeviceManager] Creating window 2 on screen {self.display_p2}...")
+            self.window2 = pyglet.window.Window(
+                fullscreen=True,
+                screen=screens[self.display_p2]
+            )
+            # Disable exclusive keyboard on second window
+            self.window2.set_exclusive_keyboard(False)
+            print(f"[DeviceManager] Window 2 created successfully")
+
+            print(f"[DeviceManager] Both windows created successfully on displays {self.display_p1} and {self.display_p2}")
+
+        except Exception as e:
+            print(f"[DeviceManager] ERROR creating fullscreen windows: {e}")
+            print(f"[DeviceManager] Attempting fallback to windowed mode...")
+
+            try:
+                # Fallback: Create large windowed mode instead of fullscreen
+                self.window1 = pyglet.window.Window(
+                    width=screens[self.display_p1].width,
+                    height=screens[self.display_p1].height,
+                    screen=screens[self.display_p1]
+                )
+                self.window1.set_exclusive_keyboard(False)
+
+                self.window2 = pyglet.window.Window(
+                    width=screens[self.display_p2].width,
+                    height=screens[self.display_p2].height,
+                    screen=screens[self.display_p2]
+                )
+                self.window2.set_exclusive_keyboard(False)
+
+                print(f"[DeviceManager] Created windowed mode windows successfully")
+
+            except Exception as e2:
+                raise RuntimeError(
+                    f"Failed to create Pyglet windows: {e}\n\n"
+                    f"Windowed fallback also failed: {e2}\n\n"
+                    f"This may indicate:\n"
+                    f"1. Pyglet version incompatibility (try: pip install pyglet==1.5.29)\n"
+                    f"2. Graphics driver issues\n"
+                    f"3. Invalid display indices (check Device Setup)\n\n"
+                    f"Please verify:\n"
+                    f"- All monitors are connected and detected\n"
+                    f"- Graphics drivers are up to date\n"
+                    f"- Pyglet version is compatible"
+                )
 
     def cleanup(self):
         """Close windows and release devices."""
@@ -127,6 +180,15 @@ class DeviceManager:
             List of error messages (empty if valid)
         """
         errors = []
+
+        # Ensure devices are scanned before validation (defensive check)
+        if not self.displays:
+            print("[DeviceManager] Auto-scanning displays for validation...")
+            self.displays = self._scanner.scan_displays()
+        if not self.audio_devices:
+            print("[DeviceManager] Auto-scanning audio devices for validation...")
+            audio_result = self._scanner.scan_audio_devices()
+            self.audio_devices = audio_result['all']
 
         # Check displays exist
         num_displays = len(self.displays)

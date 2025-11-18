@@ -5,6 +5,7 @@ Manages the sequence of blocks in an experiment.
 """
 
 from typing import List, Optional, Dict, Any
+import os
 from .block import Block
 
 
@@ -38,6 +39,8 @@ class Timeline:
             'audio_device_2': None,  # Audio device index for participant 2
             # Experiment settings
             'baseline_duration': 240,  # Default baseline duration
+            # Data output configuration
+            'output_directory': None,  # Directory where experiment data will be saved
             # LSL configuration
             'lsl_stream_name': 'ExpEvent_Markers',  # LSL stream name
             'lsl_enabled': True,  # Whether to send LSL markers
@@ -87,6 +90,27 @@ class Timeline:
         for i, block in enumerate(self.blocks):
             block_errors = block.validate()
             errors.extend([f"Block {i} ({block.name}): {e}" for e in block_errors])
+        return errors
+
+    def validate_for_execution(self) -> List[str]:
+        """
+        Validate timeline is ready for execution (includes metadata checks).
+
+        Returns:
+            List of error messages (empty if valid)
+        """
+        errors = self.validate()  # Start with block validation
+
+        # Validate output directory if configured
+        output_dir = self.metadata.get('output_directory')
+        if output_dir is not None and output_dir != '':
+            if not os.path.exists(output_dir):
+                errors.append(f"Output directory does not exist: {output_dir}")
+            elif not os.path.isdir(output_dir):
+                errors.append(f"Output path is not a directory: {output_dir}")
+            elif not os.access(output_dir, os.W_OK):
+                errors.append(f"Output directory is not writable: {output_dir}")
+
         return errors
 
     def get_total_trials(self) -> int:

@@ -50,21 +50,24 @@ class InstructionPhase(Phase):
         self.continue_key = continue_key
         self.duration = duration
 
-    def execute(self, device_manager, lsl_outlet, trial_data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def execute(self, device_manager, lsl_outlet, trial_data: Optional[Dict[str, Any]] = None,
+                on_complete=None) -> None:
         """
-        Execute instruction display.
+        Execute instruction display (non-blocking, callback-based).
 
         Args:
             device_manager: DeviceManager instance
             lsl_outlet: LSL StreamOutlet
             trial_data: Dictionary of trial variables for marker template resolution
-
-        Returns:
-            {'duration': float, 'start_time': float, 'end_time': float}
+            on_complete: Callback function(result_dict) called when phase completes
 
         Events emitted:
             - phase_start: At beginning of instruction display
             - phase_end: At end of instruction display
+
+        Note:
+            This method is non-blocking. It schedules instruction display and returns immediately.
+            Results are passed to on_complete callback when user presses key or duration expires.
         """
         # Send phase_start event markers
         self.send_event_markers("phase_start", lsl_outlet, trial_data)
@@ -75,11 +78,7 @@ class InstructionPhase(Phase):
         window1 = device_manager.window1
         window2 = device_manager.window2
 
-        # Create instruction batches
-        instruction_batch1 = pyglet.graphics.Batch()
-        instruction_batch2 = pyglet.graphics.Batch()
-
-        # Create instruction labels
+        # Create instruction text
         instruction_text = self.text
         if self.wait_for_key:
             # Add continue instruction based on continue_key
@@ -89,7 +88,10 @@ class InstructionPhase(Phase):
             else:
                 instruction_text += "\n\nPress any key to continue"
 
-        label1 = pyglet.text.Label(
+        # CRITICAL: Switch to window1's OpenGL context before creating its graphics
+        window1.switch_to()
+        self.instruction_batch1 = pyglet.graphics.Batch()
+        self.label1 = pyglet.text.Label(
             instruction_text,
             font_name='Arial',
             font_size=self.font_size,
@@ -99,10 +101,13 @@ class InstructionPhase(Phase):
             anchor_y='center',
             multiline=True,
             width=window1.width * 0.8,
-            batch=instruction_batch1
+            batch=self.instruction_batch1
         )
 
-        label2 = pyglet.text.Label(
+        # CRITICAL: Switch to window2's OpenGL context before creating its graphics
+        window2.switch_to()
+        self.instruction_batch2 = pyglet.graphics.Batch()
+        self.label2 = pyglet.text.Label(
             instruction_text,
             font_name='Arial',
             font_size=self.font_size,
@@ -112,26 +117,59 @@ class InstructionPhase(Phase):
             anchor_y='center',
             multiline=True,
             width=window2.width * 0.8,
-            batch=instruction_batch2
+            batch=self.instruction_batch2
         )
 
-        # Set up draw handlers
+        # Set up draw handlers (reference INSTANCE variables)
         @window1.event
         def on_draw():
             window1.clear()
-            instruction_batch1.draw()
+            self.instruction_batch1.draw()
 
         @window2.event
         def on_draw():
             window2.clear()
-            instruction_batch2.draw()
+            self.instruction_batch2.draw()
+
+        # Track cleanup resources
+        self.auto_exit_func = None
+        self.key_handler_finished = False
+
+        def finish_phase():
+            """Cleanup and complete phase."""
+            # Prevent multiple calls
+            if self.key_handler_finished:
+                return
+            self.key_handler_finished = True
+
+            end_time = time.time()
+
+            # Clean up: Remove keyboard handlers from both windows
+            if self.wait_for_key:
+                window1.remove_handlers(on_key_press=on_key_press_handler)
+                window2.remove_handlers(on_key_press=on_key_press_handler)
+
+            if self.auto_exit_func:
+                pyglet.clock.unschedule(self.auto_exit_func)
+
+            # Send phase_end event markers
+            self.send_event_markers("phase_end", lsl_outlet, trial_data)
+
+            # Prepare result
+            result = {
+                'duration': end_time - start_time,
+                'start_time': start_time,
+                'end_time': end_time
+            }
+
+            # Call completion callback
+            if on_complete:
+                on_complete(result)
 
         # Set up key press handler if needed
         if self.wait_for_key:
-            input_window = pyglet.window.Window(visible=False)
-
-            @input_window.event
-            def on_key_press(symbol, modifiers):
+            # Define handler function (will be attached to both visible windows)
+            def on_key_press_handler(symbol, modifiers):
                 # Check for specific key or accept any key
                 if self.continue_key:
                     # Map continue_key string to pyglet key constant
@@ -144,36 +182,22 @@ class InstructionPhase(Phase):
                     }
                     expected_key = key_map.get(self.continue_key.lower(), key.SPACE)
                     if symbol == expected_key:
-                        pyglet.app.exit()
+                        finish_phase()
                 else:
                     # Accept any key
-                    pyglet.app.exit()
+                    finish_phase()
+
+            # Attach handler to BOTH visible windows (not hidden window)
+            window1.push_handlers(on_key_press=on_key_press_handler)
+            window2.push_handlers(on_key_press=on_key_press_handler)
 
         # Set up duration timer if specified
         if self.duration:
             def auto_exit(dt):
-                pyglet.clock.unschedule(auto_exit)
-                pyglet.app.exit()
+                finish_phase()
 
-            pyglet.clock.schedule_once(auto_exit, self.duration)
-
-        # Run event loop
-        pyglet.app.run()
-
-        end_time = time.time()
-
-        # Clean up
-        if self.wait_for_key:
-            input_window.close()
-
-        # Send phase_end event markers
-        self.send_event_markers("phase_end", lsl_outlet, trial_data)
-
-        return {
-            'duration': end_time - start_time,
-            'start_time': start_time,
-            'end_time': end_time
-        }
+            self.auto_exit_func = auto_exit
+            pyglet.clock.schedule_once(self.auto_exit_func, self.duration)
 
     def validate(self) -> List[str]:
         """Validate instruction phase configuration."""
@@ -235,7 +259,8 @@ class InstructionPhase(Phase):
         Returns:
             Set of variable names (e.g., {'text'})
         """
-        variables = set()
+        # Get marker template variables from parent
+        variables = super().get_required_variables()
 
         # Check text
         if self._is_template(str(self.text)):

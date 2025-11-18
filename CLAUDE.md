@@ -12,7 +12,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Baseline periods with fixation crosses
 - CSV output of behavioral data (ratings, timestamps)
 
-**Technology Stack**: Python 3.11, PsychoPy 2023.1.3, Pyglet 1.4.11, LSL (pylsl), FFmpeg, sounddevice, pandas
+**Technology Stack**: Python 3.11, PsychoPy 2023.1.3, Pyglet 2.1+, LSL (pylsl), FFmpeg, sounddevice, pandas
 
 ## Running the Experiment
 
@@ -156,6 +156,113 @@ From `CodeBook.txt`:
 
 **Example**: Marker `300507` = Participant 1, Trial 5, Rating 7
 
+## LabRecorder Auto-Start (New Architecture)
+
+The new architecture (`core/execution`) supports automatic LabRecorder control via Remote Control Socket (RCS). This allows the experiment to automatically start/stop LSL recording without manual intervention.
+
+### Setup Instructions
+
+1. **Start all LSL streaming programs FIRST**:
+   - Launch Emotiv software with LSL streaming enabled (for both EEG headsets)
+   - Launch any other LSL streams (face synchrony, video capture, etc.)
+   - Verify all streams are active using LSL LabRecorder stream list
+
+2. **Launch LabRecorder**:
+   - Start LabRecorder application
+   - Enable "Remote Control Socket (RCS)" in LabRecorder settings
+   - Default port: 22345 (can be configured)
+   - Leave LabRecorder running in the background
+
+3. **Configure DyadicSync**:
+   - Open Timeline Editor
+   - Go to `Experiment > Settings`
+   - In "LabRecorder Auto-Start" section:
+     - ✓ Enable "Enable LabRecorder auto-start"
+     - Set "RCS Host" (default: `localhost`)
+     - Set "RCS Port" (default: `22345`)
+     - Click "Test Connection" to verify LabRecorder is reachable
+   - Save settings
+
+4. **Run Experiment**:
+   - When you click "Run Experiment", DyadicSync will:
+     - Automatically connect to LabRecorder
+     - Select ALL available LSL streams (no filtering)
+     - Start recording with filename: `sub-{ID:03d}_ses-{#:02d}_{task}.xdf`
+     - Stop recording when experiment completes or is aborted
+
+### Features
+
+**Automatic Stream Selection**:
+- Auto-start captures **ALL** available LSL streams on the network
+- No filtering by stream type or name
+- Ensures complete multi-modal data capture (EEG, Markers, face synchrony, video, etc.)
+
+**Synchronized Filenames**:
+- XDF file uses same naming convention as behavioral CSV
+- Example: `sub-001_ses-01_DyadicVideoSync.xdf`
+- Both files stored in same output directory (configured in Experiment Settings)
+
+**Graceful Fallback**:
+- If LabRecorder connection fails, experiment continues without LSL recording
+- Warning displayed in execution dialog: "⚠️ LabRecorder: Connection failed (continuing without)"
+- Manual recording with LabRecorder GUI still works as backup
+
+**Test Mode Support**:
+- When `subject_id = 0` or `session = 0`, auto-start is skipped
+- Matches existing behavior: no CSV saved, no XDF recording
+- Useful for testing experiment flow without generating data files
+
+### Status Indicators
+
+During experiment execution, the progress dialog shows LabRecorder status:
+- "🔴 LabRecorder: Recording all streams" (green) - Recording active
+- "⚠️ LabRecorder: Connection failed" (orange) - Failed to connect, experiment continuing
+- "⏹ LabRecorder: Stopped" (gray) - Recording stopped after completion
+
+### Implementation Details
+
+**Architecture**:
+- `core/labrecorder_control.py` - LabRecorderController class for RCS communication
+- `timeline_editor/dialogs/execution_dialog.py` - Start/stop control integrated into execution flow
+- `core/ipc/serialization.py` - LabRecorder settings passed to subprocess via ExperimentConfig
+
+**Remote Control Protocol**:
+- TCP socket connection to LabRecorder RCS (default: `localhost:22345`)
+- Commands used:
+  - `select all` - Select all available LSL streams
+  - `filename {root:...} {participant:...} {session:...} {task:...}` - Configure output filename
+  - `start` - Start recording
+  - `stop` - Stop recording
+
+**Timing**:
+- LabRecorder starts BEFORE experiment subprocess launches
+- Ensures headset selection marker (9161/9162) is captured
+- Recording stops AFTER experiment completes
+- Captures all markers including completion events
+
+### Troubleshooting
+
+**"Connection failed" error**:
+1. Verify LabRecorder is running
+2. Check "Remote Control Socket" is enabled in LabRecorder settings
+3. Verify host/port settings match LabRecorder configuration
+4. Use "Test Connection" button in Experiment Settings to diagnose
+
+**No streams recorded**:
+1. Verify LSL streaming programs are running BEFORE starting LabRecorder
+2. Check LabRecorder stream list shows all expected streams
+3. Ensure streams are active (green indicators in LabRecorder)
+
+**Partial data capture**:
+- If experiment aborts or crashes, LabRecorder may still have partial recording
+- XDF file will contain all markers up to abort point
+- This is normal behavior - partial data is saved
+
+**Manual override**:
+- Auto-start can be disabled in Experiment Settings
+- LabRecorder can be controlled manually via GUI as before
+- Both approaches work simultaneously (auto-start + manual control compatible)
+
 ## Video Pair CSV Format
 
 Required columns:
@@ -230,11 +337,13 @@ EEG data and LSL markers are recorded by LabRecorder (external software) in sepa
 
 **Audio device mismatch**: Run `utilities/audioscan.py` to get current device indices, update lines 21-22 in `WithBaseline.py`
 
-**Video won't load**: Use `utilities/videotester.py` to check codec compatibility. Convert problematic videos with `utilities/video_converter.py`
+**Video won't load / "No decoders available"**: Ensure you have FFmpeg **shared** build installed (not "essentials"). The shared build includes DLLs required by Pyglet's video decoder. See `FFMPEG_SETUP.md` for details. Use `utilities/videotester.py` to check codec compatibility. Convert problematic videos with `utilities/video_converter.py`
 
 **Screen not detected**: Verify 3 displays connected. Check display settings in OS. Pyglet may cache screen configuration (restart Python).
 
 **LSL streams not appearing**: Ensure Emotiv software is running with LSL enabled before starting LabRecorder. Check that LSL WebSocket is connected.
+
+**LabRecorder auto-start not working**: See "LabRecorder Auto-Start" section above for detailed troubleshooting. Most common: RCS not enabled in LabRecorder, or wrong host/port configuration. Use "Test Connection" button in Experiment Settings to diagnose.
 
 **Ratings not captured**: Verify global input listener window is created (lines 41, 46). Check that participant response flags (`p1_responded`, `p2_responded`) are reset in `create_rating_screen()`.
 

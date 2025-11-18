@@ -25,8 +25,9 @@ class TimelineCanvas(Frame):
     - Visual blocks for each phase in timeline
     - Click to select blocks
     - Double-click to edit block properties
-    - Right-click context menu
-    - Drag-and-drop to reorder (future enhancement)
+    - Right-click context menu (or during drag to cancel)
+    - Drag-and-drop to reorder blocks (click and drag blocks horizontally)
+    - Drag outside bounds to cancel drag operation
     """
 
     PIXELS_PER_SECOND = 20  # Base scale: 20 pixels = 1 second
@@ -61,6 +62,11 @@ class TimelineCanvas(Frame):
         self.blocks: List[TimelineBlock] = []
         self._updating_zoom = False  # Flag to prevent recursion
         self._refreshing = False  # Flag to prevent refresh loops
+
+        # Drag state
+        self._dragging_block = None
+        self._drag_original_index = None
+        self._drag_current_index = None
 
         print(f"[DEBUG {time.time():.3f}] TimelineCanvas calling _setup_ui...")
         self._setup_ui()
@@ -163,7 +169,7 @@ class TimelineCanvas(Frame):
         if isinstance(phase, BaselinePhase):
             return BlockType.BASELINE
         elif isinstance(phase, InstructionPhase):
-            return BlockType.WELCOME
+            return BlockType.INSTRUCTION
         elif isinstance(phase, FixationPhase):
             return BlockType.FIXATION
         elif isinstance(phase, VideoPhase):
@@ -202,7 +208,10 @@ class TimelineCanvas(Frame):
             width=width,
             height=self.BLOCK_HEIGHT,
             on_click=self._on_block_click,
-            on_double_click=self._on_block_double_click
+            on_double_click=self._on_block_double_click,
+            on_drag_start=self._on_block_drag_start,
+            on_drag_motion=self._on_block_drag_motion,
+            on_drag_end=self._on_block_drag_end
         )
 
         # Add visual break indicator if duration was capped
@@ -316,11 +325,25 @@ class TimelineCanvas(Frame):
                         tags=(f"repetition_label_{block_idx}", "repetition_label")
                     )
 
+                    # Add duration display if calculated
+                    if hasattr(block, '_cached_duration') and block._cached_duration is not None:
+                        from utilities.format_utils import format_duration_compact
+                        duration_text = format_duration_compact(block._cached_duration)
+                        self.canvas.create_text(
+                            trial_center_x,
+                            y + self.BLOCK_HEIGHT + 15,  # Below the blocks
+                            text=f"({duration_text})",
+                            fill="#666666",  # Gray for subtle display
+                            font=("Arial", 9),
+                            tags=(f"duration_label_{block_idx}", "duration_label")
+                        )
+
                     # Extra spacing after the collapsed trial
                     x += self.BLOCK_SPACING
 
             else:
                 # Simple block (single execution) - iterate through phases once
+                simple_start_x = x
                 for phase in block.procedure.phases:
                     phase_duration = phase.get_estimated_duration()
 
@@ -334,6 +357,21 @@ class TimelineCanvas(Frame):
                     visual_block = self._create_visual_block(block_type, block_idx, phase_duration, x, y)
                     self.blocks.append(visual_block)
                     x += visual_block.width + self.BLOCK_SPACING
+
+                # Add duration display if calculated for simple blocks too
+                if hasattr(block, '_cached_duration') and block._cached_duration is not None:
+                    from utilities.format_utils import format_duration_compact
+                    simple_end_x = x
+                    simple_center_x = (simple_start_x + simple_end_x) // 2
+                    duration_text = format_duration_compact(block._cached_duration)
+                    self.canvas.create_text(
+                        simple_center_x,
+                        y + self.BLOCK_HEIGHT + 15,  # Below the blocks
+                        text=f"({duration_text})",
+                        fill="#666666",  # Gray for subtle display
+                        font=("Arial", 9),
+                        tags=(f"duration_label_{block_idx}", "duration_label")
+                    )
 
         # Update scroll region
         print(f"[DEBUG {time.time():.3f}] Updating scroll region...")
@@ -449,7 +487,10 @@ class TimelineCanvas(Frame):
             import copy
             block = self.timeline.blocks[self.selected_block_index]
             duplicate = copy.deepcopy(block)
-            duplicate.name = f"{block.name} (Copy)"
+
+            # Generate unique name for the duplicate
+            duplicate.name = self._generate_unique_block_name(block.name)
+
             self.timeline.blocks.insert(self.selected_block_index + 1, duplicate)
             self.refresh()
 
@@ -494,6 +535,29 @@ class TimelineCanvas(Frame):
         if not self._updating_zoom:
             self.set_zoom(float(value))
 
+    def _generate_unique_block_name(self, base_name: str) -> str:
+        """
+        Generate a unique block name by appending a number if needed.
+
+        Args:
+            base_name: Base name to use (e.g., "Baseline")
+
+        Returns:
+            Unique name (e.g., "Baseline" or "Baseline2" if "Baseline" exists)
+        """
+        existing_names = {block.name for block in self.timeline.blocks}
+
+        # If base name doesn't exist, use it as-is
+        if base_name not in existing_names:
+            return base_name
+
+        # Find next available number
+        counter = 2
+        while f"{base_name}{counter}" in existing_names:
+            counter += 1
+
+        return f"{base_name}{counter}"
+
     def refresh(self):
         """Rebuild timeline from current config."""
         if self._refreshing:
@@ -514,8 +578,9 @@ class TimelineCanvas(Frame):
 
         insert_index = self.selected_block_index + 1 if self.selected_block_index is not None else len(self.timeline.blocks)
 
-        # Create new simple block with instruction phase
-        new_block = Block(name="New Block", block_type='simple')
+        # Create new simple block with instruction phase and unique name
+        unique_name = self._generate_unique_block_name("New Block")
+        new_block = Block(name=unique_name, block_type='simple')
         new_proc = Procedure("New Procedure")
         new_proc.add_phase(InstructionPhase(
             text="New instruction...",
@@ -525,3 +590,115 @@ class TimelineCanvas(Frame):
         new_block.procedure = new_proc
         self.timeline.blocks.insert(insert_index, new_block)
         self.refresh()
+
+    def _on_block_drag_start(self, block: TimelineBlock, block_index: int):
+        """
+        Handle block drag start.
+
+        Args:
+            block: The TimelineBlock being dragged
+            block_index: Index of the parent Block in timeline
+        """
+        print(f"[DEBUG] Drag started for block at index {block_index}")
+        self._dragging_block = block
+        self._drag_original_index = block_index
+        self._drag_current_index = block_index
+
+    def _on_block_drag_motion(self, block: TimelineBlock, x_root: int):
+        """
+        Handle block drag motion - calculate potential drop position.
+
+        Args:
+            block: The TimelineBlock being dragged
+            x_root: Root X coordinate of mouse
+        """
+        # Convert root coordinates to canvas coordinates
+        canvas_x = self.canvas.winfo_pointerx() - self.canvas.winfo_rootx()
+
+        # Check if dragging outside canvas bounds (cancel drag)
+        canvas_width = self.canvas.winfo_width()
+        if canvas_x < 0 or canvas_x > canvas_width:
+            # Outside bounds - will be handled by block's right-click or release handler
+            return
+
+        # Calculate which block index this position corresponds to
+        new_index = self._calculate_drop_index(canvas_x)
+        if new_index != self._drag_current_index:
+            self._drag_current_index = new_index
+            print(f"[DEBUG] Drag motion: potential drop at index {new_index}")
+
+    def _on_block_drag_end(self, block: TimelineBlock):
+        """
+        Handle block drag end - perform reordering.
+
+        Args:
+            block: The TimelineBlock that was dragged
+        """
+        if self._drag_original_index is None or self._drag_current_index is None:
+            # Invalid state, reset
+            self._reset_drag_state()
+            return
+
+        # Check if block was dragged outside bounds
+        canvas_x = self.canvas.winfo_pointerx() - self.canvas.winfo_rootx()
+        canvas_width = self.canvas.winfo_width()
+        canvas_height = self.canvas.winfo_height()
+        canvas_y = self.canvas.winfo_pointery() - self.canvas.winfo_rooty()
+
+        if canvas_x < -50 or canvas_x > canvas_width + 50 or canvas_y < -50 or canvas_y > canvas_height + 50:
+            # Dragged far outside bounds - cancel drag
+            print(f"[DEBUG] Drag cancelled: outside bounds")
+            block.set_position(block._original_x, block._original_y)
+            self._reset_drag_state()
+            return
+
+        old_index = self._drag_original_index
+        new_index = self._calculate_drop_index(canvas_x)
+
+        print(f"[DEBUG] Drag ended: reordering from {old_index} to {new_index}")
+
+        if old_index != new_index and 0 <= new_index < len(self.timeline.blocks):
+            # Perform reordering in timeline data model
+            block_to_move = self.timeline.blocks.pop(old_index)
+            self.timeline.blocks.insert(new_index, block_to_move)
+
+            # Refresh visual timeline
+            self.refresh()
+
+            # Update selection to follow the moved block
+            self.selected_block_index = new_index
+        else:
+            # No reordering needed or invalid index - just refresh to restore positions
+            self.refresh()
+
+        self._reset_drag_state()
+
+    def _calculate_drop_index(self, canvas_x: int) -> int:
+        """
+        Calculate which block index corresponds to a canvas X position.
+
+        Args:
+            canvas_x: X coordinate on canvas
+
+        Returns:
+            Block index where drop would occur
+        """
+        # Find which block the X coordinate falls into
+        # Skip visual blocks that belong to the dragged timeline block
+        for idx, visual_block in enumerate(self.blocks):
+            # Skip blocks belonging to the dragged timeline block
+            if visual_block.trial_index == self._drag_original_index:
+                continue
+
+            # Check if X is within this block's bounds (before its midpoint)
+            if canvas_x < visual_block.x + visual_block.width // 2:
+                return visual_block.trial_index
+
+        # If past all blocks, return last position
+        return len(self.timeline.blocks)
+
+    def _reset_drag_state(self):
+        """Reset drag state after drag operation completes or cancels."""
+        self._dragging_block = None
+        self._drag_original_index = None
+        self._drag_current_index = None

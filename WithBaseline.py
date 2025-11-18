@@ -11,6 +11,7 @@ import pandas as pd
 from pyglet.window import key
 import numpy as np
 from pylsl import StreamInfo, StreamOutlet
+from config.ffmpeg_config import get_ffmpeg_cmd
 
 # LSL Initiation
 info = StreamInfo(name='ExpEvent_Markers', type='Markers', channel_count=1,
@@ -116,7 +117,7 @@ def show_welcome_screen():
 
     try:
         # Use the same screen setup as videos
-        display = pyglet.canvas.get_display()
+        display = pyglet.display.get_display()
         screens = display.get_screens()
 
         if len(screens) < 3:
@@ -235,8 +236,8 @@ def show_welcome_screen():
                 cross1.draw()
             elif phase == "videos":
                 debug_print("Rendering video on window 1.")
-                if player1 and player1.player.source and player1.player.get_texture():
-                    player1.player.get_texture().blit(0, 0, width=window1.width, height=window1.height)
+                if player1 and player1.player.source and player1.player.texture:
+                    player1.player.texture.blit(0, 0, width=window1.width, height=window1.height)
 
         @window2.event
         def on_draw():
@@ -251,8 +252,8 @@ def show_welcome_screen():
                 cross2.draw()
             elif phase == "videos":
                 debug_print("Rendering video on window 2.")
-                if player2 and player2.player.source and player2.player.get_texture():
-                    player2.player.get_texture().blit(0, 0, width=window2.width, height=window2.height)
+                if player2 and player2.player.source and player2.player.texture:
+                    player2.player.texture.blit(0, 0, width=window2.width, height=window2.height)
 
         @window1.event
         def on_key_press(symbol, modifiers):
@@ -323,7 +324,7 @@ class SynchronizedPlayer:
                         format='wav',
                         acodec='pcm_s16le',
                         y=None
-                    ).run(quiet=True, capture_stdout=True, capture_stderr=True)
+                    ).run(cmd=get_ffmpeg_cmd(), quiet=True, capture_stdout=True, capture_stderr=True)
                 except Exception as e:
                     debug_print(f"FFmpeg error for {self.video_path}: {str(e)}")
                     raise
@@ -436,7 +437,7 @@ class CrossDisplay:
 def display_cross_for_duration(duration_seconds, on_complete):
     global window1, window2, cross1, cross2, phase
 
-    display = pyglet.canvas.get_display()
+    display = pyglet.display.get_display()
     screens = display.get_screens()
 
     # Create windows for cross display
@@ -628,16 +629,16 @@ def run_video_audio_sync(video1_path, video2_path, audio_device_1_index, audio_d
             window1.clear()
             if cross1.active:
                 cross1.draw()
-            elif player1 and player1.player and player1.player.source and player1.player.get_texture():
-                player1.player.get_texture().blit(0, 0, width=window1.width, height=window1.height)
+            elif player1 and player1.player and player1.player.source and player1.player.texture:
+                player1.player.texture.blit(0, 0, width=window1.width, height=window1.height)
 
         @window2.event
         def on_draw():
             window2.clear()
             if cross2.active:
                 cross2.draw()
-            elif player2 and player2.player and player2.player.source and player2.player.get_texture():
-                player2.player.get_texture().blit(0, 0, width=window2.width, height=window2.height)
+            elif player2 and player2.player and player2.player.source and player2.player.texture:
+                player2.player.texture.blit(0, 0, width=window2.width, height=window2.height)
 
         def start_playback(dt):
             try:
@@ -853,9 +854,9 @@ def play_video_pairs_consecutively(video_pairs_input, audio_device_1_index, audi
     current_pair_index = 0
     
     try:
-        display = pyglet.canvas.get_display()
+        display = pyglet.display.get_display()
         screens = display.get_screens()
-        
+
         if len(screens) < 3:
             debug_print("Error: Not enough screens detected")
             return

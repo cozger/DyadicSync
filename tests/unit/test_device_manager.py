@@ -81,7 +81,7 @@ def test_device_manager_configure_partial():
 
 @pytest.mark.unit
 @patch('pyglet.window.Window')
-@patch('pyglet.canvas.get_display')
+@patch('pyglet.display.get_display')
 def test_device_manager_initialize_creates_windows(mock_get_display, mock_window_class,
                                                    mock_device_scanner):
     """Test that initialize() creates two windows."""
@@ -110,7 +110,7 @@ def test_device_manager_initialize_creates_windows(mock_get_display, mock_window
 
 @pytest.mark.unit
 @patch('pyglet.window.Window')
-@patch('pyglet.canvas.get_display')
+@patch('pyglet.display.get_display')
 def test_device_manager_initialize_uses_correct_screens(mock_get_display, mock_window_class,
                                                          mock_device_scanner):
     """Test that windows are created on correct screen indices."""

@@ -16,7 +16,7 @@ from core.device_config import DeviceConfigHandler
 
 @pytest.mark.integration
 @patch('pyglet.window.Window')
-@patch('pyglet.canvas.get_display')
+@patch('pyglet.display.get_display')
 def test_device_manager_uses_scanner_data(mock_get_display, mock_window_class,
                                           mock_device_scanner):
     """Test DeviceManager correctly uses DeviceScanner data."""
@@ -93,7 +93,7 @@ def test_scanner_to_manager_display_configuration():
 
 @pytest.mark.integration
 @patch('pyglet.window.Window')
-@patch('pyglet.canvas.get_display')
+@patch('pyglet.display.get_display')
 def test_device_config_to_manager_workflow(mock_get_display, mock_window_class,
                                            mock_device_scanner, tmp_path):
     """Test loading configuration from DeviceConfigHandler into DeviceManager."""

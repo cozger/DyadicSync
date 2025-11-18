@@ -30,15 +30,58 @@ class DataCollector:
             output_dir: Directory to save data files
             experiment_name: Experiment name for filename
         """
-        self.output_dir = output_dir
+        self.output_directory = output_dir  # Use consistent name with timeline metadata
+        self.output_dir = output_dir  # Keep for backward compatibility
         self.experiment_name = experiment_name
         self.trials_data: List[Dict[str, Any]] = []
         self.participant_data: List[Dict[str, Any]] = []
+
+        # Subject/session info for filename generation
+        self.subject_id: Optional[int] = None
+        self.session: Optional[int] = None
+        self.data_saving_enabled: bool = True
 
         # Create output directory if needed
         os.makedirs(output_dir, exist_ok=True)
 
         print(f"[DataCollector] Initialized (output: {output_dir}/{experiment_name})")
+
+    def set_subject_info(self, subject_id: int, session: int):
+        """
+        Set subject and session information for filename generation.
+
+        Args:
+            subject_id: Subject identifier (0 to disable data saving)
+            session: Session number (0 to disable data saving)
+        """
+        self.subject_id = subject_id
+        self.session = session
+
+        # Disable data saving if either is 0
+        if subject_id == 0 or session == 0:
+            self.data_saving_enabled = False
+            print("[DataCollector] Data saving DISABLED (subject_id or session = 0)")
+        else:
+            self.data_saving_enabled = True
+            print(f"[DataCollector] Subject: {subject_id}, Session: {session}")
+
+    def _get_output_filename(self, suffix: str) -> str:
+        """
+        Generate output filename with subject/session info.
+
+        Args:
+            suffix: File suffix (e.g., 'trials', 'responses', 'data')
+
+        Returns:
+            Full path to output file
+        """
+        if self.subject_id is not None and self.session is not None:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"sub-{self.subject_id:03d}_ses-{self.session:02d}_{timestamp}_{suffix}.csv"
+        else:
+            filename = f"{self.experiment_name}_{suffix}.csv"
+
+        return os.path.join(self.output_directory, filename)
 
     def save_trial(self, trial: Trial):
         """
@@ -104,16 +147,21 @@ class DataCollector:
         - experiment_name_trials.csv: Trial-level data
         - experiment_name_responses.csv: Response-level data (one row per participant per trial)
         """
+        # Check if data saving is enabled
+        if not self.data_saving_enabled:
+            print("[DataCollector] Data saving disabled - no files will be written")
+            return
+
         # Save trial-level data
         if self.trials_data:
-            trials_file = os.path.join(self.output_dir, f"{self.experiment_name}_trials.csv")
+            trials_file = self._get_output_filename("trials")
             df_trials = pd.DataFrame(self.trials_data)
             df_trials.to_csv(trials_file, index=False)
             print(f"[DataCollector] Saved {len(self.trials_data)} trials to {trials_file}")
 
         # Save participant response data
         if self.participant_data:
-            responses_file = os.path.join(self.output_dir, f"{self.experiment_name}_responses.csv")
+            responses_file = self._get_output_filename("responses")
             df_responses = pd.DataFrame(self.participant_data)
             df_responses.to_csv(responses_file, index=False)
             print(f"[DataCollector] Saved {len(self.participant_data)} responses to {responses_file}")
@@ -123,8 +171,11 @@ class DataCollector:
 
     def _save_intermediate(self):
         """Save intermediate data for crash recovery."""
+        if not self.data_saving_enabled:
+            return
+
         if self.trials_data:
-            intermediate_file = os.path.join(self.output_dir, f"{self.experiment_name}_intermediate.csv")
+            intermediate_file = self._get_output_filename("intermediate")
             df = pd.DataFrame(self.trials_data)
             df.to_csv(intermediate_file, index=False)
 
@@ -134,10 +185,10 @@ class DataCollector:
 
         Format: participant, rating, trial_id, video1, video2, timestamp
         """
-        if not self.participant_data:
+        if not self.data_saving_enabled or not self.participant_data:
             return
 
-        legacy_file = os.path.join(self.output_dir, f"{self.experiment_name}_data.csv")
+        legacy_file = self._get_output_filename("data")
 
         # Convert to legacy format
         legacy_data = []

@@ -62,9 +62,10 @@ class Procedure:
         phase = self.phases.pop(old_index)
         self.phases.insert(new_index, phase)
 
-    def execute(self, trial_data: Optional[Dict], device_manager, lsl_outlet, data_collector, preloader=None):
+    def execute(self, trial_data: Optional[Dict], device_manager, lsl_outlet, data_collector,
+                preloader=None, on_complete=None):
         """
-        Execute all phases in sequence with zero-ISI preloading support.
+        Execute all phases in sequence with zero-ISI preloading support (non-blocking, callback-based).
 
         Args:
             trial_data: Dictionary of trial variables (e.g., {'video1': 'path.mp4', 'trial_index': 1})
@@ -72,26 +73,21 @@ class Procedure:
             lsl_outlet: LSL outlet for markers
             data_collector: DataCollector instance
             preloader: ContinuousPreloader instance for zero-ISI support (optional, Phase 3)
+            on_complete: Callback function(results_dict) called when all phases complete
 
-        Returns:
-            dict: Results from all phases (e.g., ratings, RTs)
+        Note:
+            This method is non-blocking. It schedules phases sequentially and returns immediately.
+            Results are passed to on_complete callback when all phases finish.
         """
-        # HIGH PRIORITY FIX: Validate trial_data is provided
-        if not trial_data:
-            raise ValueError(
-                "trial_data is required for procedure execution. "
-                "Procedures need trial data for marker template resolution and phase rendering."
-            )
-
-        # HIGH PRIORITY FIX: Validate trial_index is present in trial_data
-        if 'trial_index' not in trial_data:
+        # Validate trial_data if provided (optional for simple blocks like Welcome/Baseline)
+        if trial_data and 'trial_index' not in trial_data:
             raise ValueError(
                 "trial_data must contain 'trial_index' key for marker template resolution. "
                 f"Got trial_data keys: {list(trial_data.keys())}"
             )
 
         results = {}
-        trial_index = trial_data['trial_index']
+        trial_index = trial_data.get('trial_index', 0) if trial_data else 0
 
         # Phase 3: Render all phases upfront and inject _next_phase references
         rendered_phases = []
@@ -103,36 +99,54 @@ class Procedure:
         for i in range(len(rendered_phases) - 1):
             rendered_phases[i]._next_phase = rendered_phases[i + 1]
 
-        # Execute phases sequentially with preloading support
-        for i, rendered_phase in enumerate(rendered_phases):
+        # Recursive function to execute phases sequentially
+        def execute_phase_at_index(index):
+            """Execute phase at given index, then schedule next phase."""
+            if index >= len(rendered_phases):
+                # All phases complete - save responses and call completion callback
+                self._save_participant_responses(results, trial_data, trial_index, data_collector)
+                if on_complete:
+                    on_complete(results)
+                return
+
+            rendered_phase = rendered_phases[index]
+
             # Phase 3: Trigger preload for next phase (if preloader available and next phase exists)
-            if preloader and i < len(rendered_phases) - 1:
-                next_phase = rendered_phases[i + 1]
+            if preloader and index < len(rendered_phases) - 1:
+                next_phase = rendered_phases[index + 1]
                 if next_phase.needs_preload():
-                    # Schedule preload to start 200ms from now (during current phase display)
+                    # Schedule preload to start immediately (small delay to ensure phase has started)
+                    # With optimized FFmpeg extraction (~250ms), we want maximum prep time
                     import time
-                    preload_start_time = time.time() + 0.2
+                    preload_start_time = time.time() + 0.01  # Start ASAP (10ms buffer)
                     preloader.preload_next(next_phase, when=preload_start_time)
 
-            # Execute phase (pass trial_data for LSL marker template resolution)
-            phase_result = rendered_phase.execute(
+            # Define completion callback for this phase
+            def on_phase_complete(phase_result):
+                """Called when current phase completes."""
+                # Store result
+                results[rendered_phase.name] = phase_result
+
+                # Phase 3: Wait for preload to complete before next phase starts
+                # (In typical case with proper time-borrowing, this returns immediately)
+                if preloader:
+                    preloader.wait_for_preload(timeout=10.0)
+
+                # Schedule next phase (use pyglet.clock to avoid deep recursion)
+                import pyglet
+                pyglet.clock.schedule_once(lambda dt: execute_phase_at_index(index + 1), 0.0)
+
+            # Execute phase (non-blocking, will call on_phase_complete when done)
+            rendered_phase.execute(
                 device_manager=device_manager,
                 lsl_outlet=lsl_outlet,
-                trial_data=trial_data
+                trial_data=trial_data,
+                on_complete=on_phase_complete
             )
 
-            # Store result
-            results[rendered_phase.name] = phase_result
-
-            # Phase 3: Wait for preload to complete before next phase starts
-            # (In typical case with proper time-borrowing, this returns immediately)
-            if preloader:
-                preloader.wait_for_preload(timeout=10.0)
-
-        # Extract and save participant response data
-        self._save_participant_responses(results, trial_data, trial_index, data_collector)
-
-        return results
+        # Start executing phases from index 0
+        import pyglet
+        pyglet.clock.schedule_once(lambda dt: execute_phase_at_index(0), 0.0)
 
     def _save_participant_responses(self, results: Dict[str, Any], trial_data: Optional[Dict],
                                      trial_index: int, data_collector):

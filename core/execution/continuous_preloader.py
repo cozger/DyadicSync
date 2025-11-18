@@ -103,6 +103,13 @@ class ContinuousPreloader:
         def preload_worker():
             """Background worker that loads resources at scheduled time."""
             try:
+                # Debug: Show what phase the preloader received
+                if hasattr(next_phase, 'participant_1_video'):
+                    print(f"[Preloader] DEBUG Received phase:")
+                    print(f"  Phase name: {next_phase.name}")
+                    print(f"  P1 video: '{next_phase.participant_1_video}'")
+                    print(f"  P2 video: '{next_phase.participant_2_video}'")
+
                 # Wait until scheduled time (if specified)
                 if when:
                     delay = when - time.time()

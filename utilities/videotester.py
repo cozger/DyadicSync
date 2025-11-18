@@ -8,13 +8,14 @@ import ffmpeg
 import pyglet
 import pandas as pd
 from pathlib import Path
+from config.ffmpeg_config import get_ffprobe_cmd
 
 def debug_print(message):
     print(f"DEBUG: {message}")
 
 def analyze_video_file(video_path):
     try:
-        probe = ffmpeg.probe(video_path)
+        probe = ffmpeg.probe(video_path, cmd=get_ffprobe_cmd())
         video_stream = next(s for s in probe['streams'] if s['codec_type'] == 'video')
         audio_stream = next(s for s in probe['streams'] if s['codec_type'] == 'audio')
         
@@ -73,7 +74,7 @@ class VideoTester:
     def test_playback(self):
         try:
             # Create a window
-            display = pyglet.canvas.get_display()
+            display = pyglet.display.get_display()
             screen = display.get_screens()[0]  # Use primary screen
             self.window = pyglet.window.Window(width=800, height=600, screen=screen)
             

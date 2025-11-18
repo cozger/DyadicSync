@@ -70,21 +70,24 @@ class RatingPhase(Phase):
             key.T: 5, key.Y: 6, key.U: 7
         }
 
-    def execute(self, device_manager, lsl_outlet, trial_data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def execute(self, device_manager, lsl_outlet, trial_data: Optional[Dict[str, Any]] = None,
+                on_complete=None) -> None:
         """
-        Execute rating collection.
+        Execute rating collection (non-blocking, callback-based).
 
         Args:
             device_manager: DeviceManager instance
             lsl_outlet: LSL StreamOutlet
             trial_data: Dictionary of trial variables for marker template resolution
-
-        Returns:
-            {'p1_response': int, 'p1_rt': float, 'p2_response': int, 'p2_rt': float}
+            on_complete: Callback function(result_dict) called when phase completes
 
         Events emitted:
             - p1_response: When participant 1 provides a rating (with response_value)
             - p2_response: When participant 2 provides a rating (with response_value)
+
+        Note:
+            This method is non-blocking. It schedules rating collection and returns immediately.
+            Results are passed to on_complete callback when both participants respond or timeout occurs.
         """
         start_time = time.time()
 
@@ -101,14 +104,13 @@ class RatingPhase(Phase):
         }
         p1_responded = threading.Event()
         p2_responded = threading.Event()
-        both_responded = threading.Event()
 
-        # Create instruction batches
-        instruction_batch1 = pyglet.graphics.Batch()
-        instruction_batch2 = pyglet.graphics.Batch()
+        # CRITICAL: Switch to window1's OpenGL context before creating its graphics
+        window1.switch_to()
+        self.instruction_batch1 = pyglet.graphics.Batch()
 
         # Instructions for Participant 1
-        instruction1 = pyglet.text.Label(
+        self.instruction1 = pyglet.text.Label(
             f'{self.question}\n\n'
             f'Participant 1: Use number keys {self.scale_min}-{self.scale_max}\n'
             f'{self.scale_min} = {self.scale_labels[0]}, {self.scale_max} = {self.scale_labels[-1]}',
@@ -120,10 +122,10 @@ class RatingPhase(Phase):
             anchor_y='center',
             multiline=True,
             width=600,
-            batch=instruction_batch1
+            batch=self.instruction_batch1
         )
 
-        response1_label = pyglet.text.Label(
+        self.response1_label = pyglet.text.Label(
             'Waiting for response...',
             font_name='Arial',
             font_size=24,
@@ -131,11 +133,15 @@ class RatingPhase(Phase):
             y=window1.height // 2 - 100,
             anchor_x='center',
             anchor_y='center',
-            batch=instruction_batch1
+            batch=self.instruction_batch1
         )
 
+        # CRITICAL: Switch to window2's OpenGL context before creating its graphics
+        window2.switch_to()
+        self.instruction_batch2 = pyglet.graphics.Batch()
+
         # Instructions for Participant 2
-        instruction2 = pyglet.text.Label(
+        self.instruction2 = pyglet.text.Label(
             f'{self.question}\n\n'
             f'Participant 2: Use keys Q-U\n'
             f'Q = {self.scale_labels[0]}, U = {self.scale_labels[-1]}',
@@ -147,10 +153,10 @@ class RatingPhase(Phase):
             anchor_y='center',
             multiline=True,
             width=600,
-            batch=instruction_batch2
+            batch=self.instruction_batch2
         )
 
-        response2_label = pyglet.text.Label(
+        self.response2_label = pyglet.text.Label(
             'Waiting for response...',
             font_name='Arial',
             font_size=24,
@@ -158,25 +164,44 @@ class RatingPhase(Phase):
             y=window2.height // 2 - 100,
             anchor_x='center',
             anchor_y='center',
-            batch=instruction_batch2
+            batch=self.instruction_batch2
         )
 
-        # Set up draw handlers
+        # Set up draw handlers (reference INSTANCE variables)
         @window1.event
         def on_draw():
             window1.clear()
-            instruction_batch1.draw()
+            self.instruction_batch1.draw()
 
         @window2.event
         def on_draw():
             window2.clear()
-            instruction_batch2.draw()
+            self.instruction_batch2.draw()
 
-        # Set up key press handler (using hidden input window approach from original)
-        input_window = pyglet.window.Window(visible=False)
+        # Timeout check function reference for cleanup
+        self.check_timeout_func = None
+        self.phase_finished = False
 
-        @input_window.event
-        def on_key_press(symbol, modifiers):
+        def finish_phase():
+            """Cleanup and complete phase."""
+            # Prevent multiple calls
+            if self.phase_finished:
+                return
+            self.phase_finished = True
+
+            # Clean up: Remove keyboard handlers from both windows
+            window1.remove_handlers(on_key_press=on_key_press_handler)
+            window2.remove_handlers(on_key_press=on_key_press_handler)
+
+            if self.check_timeout_func:
+                pyglet.clock.unschedule(self.check_timeout_func)
+
+            # Call completion callback
+            if on_complete:
+                on_complete(responses)
+
+        # Define key press handler (will be attached to both visible windows)
+        def on_key_press_handler(symbol, modifiers):
             # Handle Participant 1 input
             if symbol in self.participant_1_keys and not p1_responded.is_set():
                 rating = self.participant_1_keys[symbol]
@@ -187,7 +212,7 @@ class RatingPhase(Phase):
                 # Send p1_response event marker (with response_value for template resolution)
                 self.send_event_markers("p1_response", lsl_outlet, trial_data, response_value=rating)
 
-                response1_label.text = f"Response recorded: {rating}"
+                self.response1_label.text = f"Response recorded: {rating}"
                 p1_responded.set()
 
             # Handle Participant 2 input
@@ -200,22 +225,25 @@ class RatingPhase(Phase):
                 # Send p2_response event marker (with response_value for template resolution)
                 self.send_event_markers("p2_response", lsl_outlet, trial_data, response_value=rating)
 
-                response2_label.text = f"Response recorded: {rating}"
+                self.response2_label.text = f"Response recorded: {rating}"
                 p2_responded.set()
 
             # Check if both responded
             if p1_responded.is_set() and p2_responded.is_set():
-                both_responded.set()
-                pyglet.app.exit()
+                finish_phase()
+
+        # Attach handler to BOTH visible windows (not hidden window)
+        window1.push_handlers(on_key_press=on_key_press_handler)
+        window2.push_handlers(on_key_press=on_key_press_handler)
 
         # Run event loop with timeout
         def check_timeout(dt):
             if self.timeout and (time.time() - start_time) >= self.timeout:
-                pyglet.clock.unschedule(check_timeout)
-                pyglet.app.exit()
+                finish_phase()
 
         if self.timeout:
-            pyglet.clock.schedule_interval(check_timeout, 0.1)
+            self.check_timeout_func = check_timeout
+            pyglet.clock.schedule_interval(self.check_timeout_func, 0.1)
 
         # Phase 3: Schedule early preload for next phase (if available)
         # STAGE 1 only - rating duration is variable, so STAGE 2 handled by next Fixation
@@ -228,13 +256,6 @@ class RatingPhase(Phase):
                 )
                 # Note: Actual STAGE 1 orchestration handled by ContinuousPreloader at Block level
                 # STAGE 2 (sync prep) will be handled by subsequent FixationPhase
-
-        pyglet.app.run()
-
-        # Clean up
-        input_window.close()
-
-        return responses
 
     def validate(self) -> List[str]:
         """Validate rating phase configuration."""
@@ -297,7 +318,8 @@ class RatingPhase(Phase):
         Returns:
             Set of variable names (e.g., {'question'})
         """
-        variables = set()
+        # Get marker template variables from parent
+        variables = super().get_required_variables()
 
         # Check question
         if self._is_template(str(self.question)):

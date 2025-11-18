@@ -24,12 +24,14 @@ from gui.phase_widgets import PhasePropertyEditor
 class BlockInfoEditor(ttk.LabelFrame):
     """Editor for basic block properties (name, type, stats)."""
 
-    def __init__(self, parent, block: Block, on_change: Optional[Callable] = None):
+    def __init__(self, parent, block: Block, timeline=None, on_change: Optional[Callable] = None):
         super().__init__(parent, text="Block Information", padding=10)
 
         self.block = block
+        self.timeline = timeline
         self.on_change = on_change
         self._suppress_callbacks = False
+        self._original_name = block.name  # Store original name for validation
 
         # Configure column weights so widgets expand to fill width
         self.columnconfigure(1, weight=1)
@@ -51,13 +53,13 @@ class BlockInfoEditor(ttk.LabelFrame):
             type_frame, text="Simple (no trials)",
             variable=self.type_var, value='simple',
             command=self._on_type_change
-        ).pack(side=tk.LEFT, padx=(0, 10))
+        ).pack(anchor=tk.W, pady=2)
 
         ttk.Radiobutton(
             type_frame, text="Trial-based (with trial list)",
             variable=self.type_var, value='trial_based',
             command=self._on_type_change
-        ).pack(side=tk.LEFT)
+        ).pack(anchor=tk.W, pady=2)
 
         # Read-only stats
         ttk.Separator(self, orient=tk.HORIZONTAL).grid(
@@ -69,6 +71,12 @@ class BlockInfoEditor(ttk.LabelFrame):
         self.duration_label = ttk.Label(self, text=self._get_duration_text(), font=('Arial', 9))
         self.duration_label.grid(row=3, column=1, sticky=tk.EW, pady=2, padx=(5, 0))
 
+        # Recalculate Duration Button
+        self.recalc_button = ttk.Button(
+            self, text="Recalculate", command=self._recalculate_duration
+        )
+        self.recalc_button.grid(row=3, column=2, sticky=tk.E, pady=2, padx=(5, 0))
+
         # Trial Count (if trial_based)
         ttk.Label(self, text="Trial Count:").grid(row=4, column=0, sticky=tk.W, pady=2)
         self.trial_count_label = ttk.Label(self, text=self._get_trial_count_text(), font=('Arial', 9))
@@ -76,19 +84,34 @@ class BlockInfoEditor(ttk.LabelFrame):
 
     def _get_duration_text(self) -> str:
         """Get estimated duration as formatted string."""
+        print(f"[GET_DURATION_TEXT] Called for block '{self.block.name}'")
+
         if not self.block.procedure:
+            print(f"[GET_DURATION_TEXT] No procedure, returning 'Unknown'")
             return "Unknown (no procedure)"
 
+        # Check if accurate duration has been calculated
+        if hasattr(self.block, '_cached_duration') and self.block._cached_duration is not None:
+            from utilities.format_utils import format_duration_compact
+            cached_val = self.block._cached_duration
+            formatted = format_duration_compact(cached_val)
+            print(f"[GET_DURATION_TEXT] Using cached duration: {cached_val:.2f}s → '{formatted}'")
+            return formatted
+
+        # Fall back to estimated duration
         duration = self.block.get_estimated_duration()
+        print(f"[GET_DURATION_TEXT] No cached duration, using estimated: {duration}")
         if duration < 0:
             return "Variable (depends on trials)"
 
         minutes = int(duration // 60)
         seconds = int(duration % 60)
         if minutes > 0:
-            return f"{minutes}m {seconds}s"
+            result = f"{minutes}m {seconds}s"
         else:
-            return f"{seconds}s"
+            result = f"{seconds}s"
+        print(f"[GET_DURATION_TEXT] Returning: '{result}'")
+        return result
 
     def _get_trial_count_text(self) -> str:
         """Get trial count as formatted string."""
@@ -116,9 +139,73 @@ class BlockInfoEditor(ttk.LabelFrame):
             if self.on_change:
                 self.on_change()
 
+    def _recalculate_duration(self):
+        """Manually trigger duration calculation for current block."""
+        print(f"[RECALCULATE] User requested duration recalculation for block '{self.block.name}'")
+
+        # Clear cached duration to force recalculation
+        self.block.invalidate_duration_cache()
+
+        # Clear LRU cache for video durations (in case files changed)
+        from utilities.video_duration import clear_duration_cache
+        clear_duration_cache()
+
+        # Recalculate duration
+        print(f"[RECALCULATE] Calling calculate_accurate_duration()...")
+        duration = self.block.calculate_accurate_duration()
+        print(f"[RECALCULATE] Calculation complete. Result: {duration}")
+        print(f"[RECALCULATE] Block._cached_duration is now: {getattr(self.block, '_cached_duration', 'NOT SET')}")
+
+        # Update the label
+        print(f"[RECALCULATE] Calling refresh_stats()...")
+        self.refresh_stats()
+
+        # Force GUI update
+        self.update_idletasks()
+        print(f"[RECALCULATE] Called update_idletasks()")
+
+        # NOTE: We don't call on_change() here because PropertyPanel._handle_change()
+        # invalidates the duration cache, which would undo the calculation we just did.
+        # The timeline canvas will update the next time it refreshes (e.g., when clicking
+        # another block or when the timeline is saved/loaded).
+        print(f"[RECALCULATE] Skipping on_change() to preserve cached duration")
+
+        # Log result to console
+        if duration is not None:
+            from utilities.format_utils import format_duration_compact
+            formatted = format_duration_compact(duration)
+            print(f"[RECALCULATE] ✓ Duration recalculated: {formatted}")
+        else:
+            print(f"[RECALCULATE] ✗ Unable to calculate duration")
+
     def apply_changes(self):
         """Apply changes to the block object."""
-        self.block.name = self.name_var.get()
+        new_name = self.name_var.get().strip()
+
+        # Validate name is not empty
+        if not new_name:
+            messagebox.showerror("Invalid Name", "Block name cannot be empty.")
+            self.name_var.set(self._original_name)  # Revert to original
+            return
+
+        # Validate name uniqueness (if timeline is available and name changed)
+        if self.timeline and new_name != self._original_name:
+            # Check if name already exists in other blocks
+            existing_names = {b.name for b in self.timeline.blocks if b is not self.block}
+            if new_name in existing_names:
+                messagebox.showerror(
+                    "Duplicate Name",
+                    f"A block named '{new_name}' already exists.\n\n"
+                    f"Please choose a different name."
+                )
+                self.name_var.set(self._original_name)  # Revert to original
+                return
+
+        # Apply the name change
+        self.block.name = new_name
+        self._original_name = new_name  # Update original name
+
+        # Handle block type change
         old_type = self.block.block_type
         new_type = self.type_var.get()
 
@@ -128,10 +215,31 @@ class BlockInfoEditor(ttk.LabelFrame):
             if new_type == 'simple':
                 self.block.trial_list = None
 
+    def load_block(self, block: Block):
+        """
+        Load a new block for editing.
+
+        Args:
+            block: Block to load
+        """
+        self.block = block
+        self._original_name = block.name
+        self.name_var.set(block.name)
+        self.type_var.set(block.block_type)
+        self.refresh_stats()
+
     def refresh_stats(self):
         """Refresh read-only statistics."""
-        self.duration_label.config(text=self._get_duration_text())
-        self.trial_count_label.config(text=self._get_trial_count_text())
+        print(f"[REFRESH_STATS] Starting refresh for block '{self.block.name}'")
+        duration_text = self._get_duration_text()
+        trial_text = self._get_trial_count_text()
+        print(f"[REFRESH_STATS] Setting duration label to: '{duration_text}'")
+        print(f"[REFRESH_STATS] Setting trial count label to: '{trial_text}'")
+        self.duration_label.config(text=duration_text)
+        self.trial_count_label.config(text=trial_text)
+        # Force Tkinter to process pending GUI updates immediately
+        self.update_idletasks()
+        print(f"[REFRESH_STATS] Refresh complete, update_idletasks() called")
 
 
 class ProcedureListWidget(ttk.LabelFrame):
@@ -257,8 +365,13 @@ class ProcedureListWidget(ttk.LabelFrame):
                 phase = self.block.procedure.phases[phase_idx]
                 self.phase_editor.load_phase(phase)
         else:
-            self._selected_phase_index = None
-            self.phase_editor.load_phase(None)
+            # Only clear phase properties if phase listbox has focus
+            # This prevents spurious events from other widgets (e.g., marker list clicks)
+            # from destroying the phase properties pane
+            focused_widget = self.phase_listbox.focus_get()
+            if focused_widget == self.phase_listbox:
+                self._selected_phase_index = None
+                self.phase_editor.load_phase(None)
 
     def _add_phase(self, phase_type: str):
         """Add a new phase to the procedure."""
@@ -286,6 +399,9 @@ class ProcedureListWidget(ttk.LabelFrame):
         self.block.procedure.add_phase(phase)
         self._refresh_phase_list()
 
+        # Invalidate duration cache when procedure changes
+        self.block.invalidate_duration_cache()
+
         # Select the new phase (convert phase index to listbox index)
         new_phase_idx = len(self.block.procedure.phases) - 1
         new_listbox_idx = self._phase_index_to_listbox_index(new_phase_idx)
@@ -310,6 +426,9 @@ class ProcedureListWidget(ttk.LabelFrame):
         self._refresh_phase_list()
         self.phase_editor.load_phase(None)
         self._selected_phase_index = None
+
+        # Invalidate duration cache when procedure changes
+        self.block.invalidate_duration_cache()
 
         if self.on_change:
             self.on_change()
@@ -437,6 +556,8 @@ class TrialListConfigEditor(ttk.LabelFrame):
         )
         if filename:
             self.source_var.set(filename)
+            # Invalidate duration cache when CSV path changes
+            self.block.invalidate_duration_cache()
 
     def _load_csv(self):
         """Load CSV file into trial list."""
@@ -453,6 +574,11 @@ class TrialListConfigEditor(ttk.LabelFrame):
             self.block.trial_list = TrialList(source=csv_path, source_type='csv')
             self.columns_label.config(text=self._get_columns_text())
             self.rows_label.config(text=self._get_row_count_text())
+
+            # Automatically calculate accurate duration after loading CSV
+            # This probes video files to get exact durations
+            self.block.calculate_accurate_duration()
+
             messagebox.showinfo("Success", f"Loaded {len(self.block.trial_list.trials)} trials from CSV.")
 
             if self.on_change:

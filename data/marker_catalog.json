@@ -30,20 +30,6 @@
       "marker_type": "integer"
     },
     {
-      "name": "Headset B16 to P1",
-      "description": "Participant 1 assigned headset B16",
-      "template_pattern": null,
-      "code": 9161,
-      "marker_type": "integer"
-    },
-    {
-      "name": "Headset B16 to P2",
-      "description": "Participant 1 assigned other headset, P2 is B16",
-      "template_pattern": null,
-      "code": 9162,
-      "marker_type": "integer"
-    },
-    {
       "name": "Baseline End",
       "description": "Baseline fixation cross end",
       "template_pattern": null,

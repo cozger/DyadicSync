@@ -9,7 +9,7 @@
 # ============================================================================
 
 # Video and Audio Playback
-pyglet>=2.0.0              # Video rendering and window management
+pyglet>=2.1.0              # Video rendering and window management (uses pyglet.display API)
 sounddevice>=0.4.6         # Audio device routing and playback
 soundfile>=0.12.1          # Audio file reading (WAV support)
 ffmpeg-python>=0.2.0       # Audio extraction from video files
@@ -27,6 +27,7 @@ pylsl>=1.16.0              # Event markers and synchronization with EEG systems
 
 # Tkinter is included with Python standard library (no installation needed)
 Pillow>=9.0.0              # Image display in GUI components
+dxcam>=0.0.5               # Screen capture for participant monitor previews (Windows only)
 
 # ============================================================================
 # UTILITY DEPENDENCIES

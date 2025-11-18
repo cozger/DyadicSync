@@ -43,8 +43,8 @@ class DeviceSetupDialog(tk.Toplevel):
 
         # Window configuration
         self.title("Device Setup")
-        self.geometry("1200x700")
-        self.minsize(900, 600)
+        self.geometry("1200x100")  # Temporary height, will resize after content is built
+        self.minsize(900, 400)
 
         # Make modal
         self.transient(parent)
@@ -88,11 +88,19 @@ class DeviceSetupDialog(tk.Toplevel):
         self._scan_devices()
         self._load_from_timeline()
 
-        # Center on parent
+        # Apply dynamic sizing and center on parent
         self.update_idletasks()
-        x = parent.winfo_x() + (parent.winfo_width() // 2) - (self.winfo_width() // 2)
-        y = parent.winfo_y() + (parent.winfo_height() // 2) - (self.winfo_height() // 2)
-        self.geometry(f"+{x}+{y}")
+        required_height = self.winfo_reqheight()
+        width = 1200
+
+        # Set dynamic size
+        self.geometry(f"{width}x{required_height}")
+        self.minsize(900, required_height)
+
+        # Center on parent
+        x = parent.winfo_x() + (parent.winfo_width() // 2) - (width // 2)
+        y = parent.winfo_y() + (parent.winfo_height() // 2) - (required_height // 2)
+        self.geometry(f"{width}x{required_height}+{x}+{y}")
 
         # Configure window close
         self.protocol("WM_DELETE_WINDOW", self._on_cancel)
@@ -100,6 +108,14 @@ class DeviceSetupDialog(tk.Toplevel):
     def _configure_styles(self):
         """Configure TTK styles"""
         self.configure(bg=self.theme_colors['bg'])
+
+    def _on_content_configure(self, event):
+        """Update scroll region when content changes"""
+        self.content_canvas.configure(scrollregion=self.content_canvas.bbox("all"))
+
+    def _on_mousewheel(self, event):
+        """Handle mousewheel scrolling"""
+        self.content_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
 
     def _create_ui(self):
         """Create the main UI"""
@@ -117,17 +133,35 @@ class DeviceSetupDialog(tk.Toplevel):
         )
         title_label.pack(anchor='w', pady=(0, 20))
 
-        # Create content frame with scrollbar
-        content_frame = tk.Frame(main_frame, bg=self.theme_colors['bg'])
-        content_frame.pack(fill='both', expand=True)
+        # Create scrollable content area
+        content_container = tk.Frame(main_frame, bg=self.theme_colors['bg'])
+        content_container.pack(fill='both', expand=True, pady=(0, 0))
 
-        # Sections
-        self._create_display_section(content_frame)
-        self._create_audio_output_section(content_frame)
-        self._create_audio_input_section(content_frame)
-        self._create_status_section(content_frame)
+        # Canvas for scrolling
+        self.content_canvas = tk.Canvas(content_container, bg=self.theme_colors['bg'], highlightthickness=0)
+        content_scrollbar = ttk.Scrollbar(content_container, orient=tk.VERTICAL, command=self.content_canvas.yview)
 
-        # Buttons at bottom
+        # Scrollable frame inside canvas
+        self.scrollable_content = tk.Frame(self.content_canvas, bg=self.theme_colors['bg'])
+        self.scrollable_content.bind("<Configure>", self._on_content_configure)
+
+        self.content_canvas.create_window((0, 0), window=self.scrollable_content, anchor=tk.NW)
+        self.content_canvas.configure(yscrollcommand=content_scrollbar.set)
+
+        # Pack canvas and scrollbar
+        content_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.content_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        # Enable mousewheel scrolling
+        self.content_canvas.bind_all("<MouseWheel>", self._on_mousewheel)
+
+        # Sections (now in scrollable_content)
+        self._create_display_section(self.scrollable_content)
+        self._create_audio_output_section(self.scrollable_content)
+        self._create_audio_input_section(self.scrollable_content)
+        self._create_status_section(self.scrollable_content)
+
+        # Buttons at bottom (fixed, always visible)
         self._create_buttons(main_frame)
 
     def _create_display_section(self, parent):
@@ -243,7 +277,7 @@ class DeviceSetupDialog(tk.Toplevel):
     def _create_buttons(self, parent):
         """Create bottom action buttons"""
         button_frame = tk.Frame(parent, bg=self.theme_colors['bg'])
-        button_frame.pack(fill='x', pady=(20, 0))
+        button_frame.pack(fill='x', pady=(0, 0))
 
         # Cancel button
         cancel_btn = ttk.Button(

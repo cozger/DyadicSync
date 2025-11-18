@@ -13,7 +13,7 @@ from core.device_scanner import DeviceScanner, DisplayInfo, AudioDeviceInfo
 # ==================== DISPLAY SCANNING TESTS ====================
 
 @pytest.mark.unit
-@patch('pyglet.canvas.get_display')
+@patch('pyglet.display.get_display')
 def test_scan_displays_returns_display_info_objects(mock_get_display, mock_pyglet_screens):
     """Test that scan_displays returns correct DisplayInfo objects."""
     # Mock pyglet to return fake screens
@@ -38,7 +38,7 @@ def test_scan_displays_returns_display_info_objects(mock_get_display, mock_pygle
 
 
 @pytest.mark.unit
-@patch('pyglet.canvas.get_display')
+@patch('pyglet.display.get_display')
 def test_scan_displays_caches_results(mock_get_display, mock_pyglet_screens):
     """Test that scan_displays caches results and doesn't re-scan."""
     mock_get_display.return_value.get_screens.return_value = mock_pyglet_screens
@@ -59,7 +59,7 @@ def test_scan_displays_caches_results(mock_get_display, mock_pyglet_screens):
 
 
 @pytest.mark.unit
-@patch('pyglet.canvas.get_display')
+@patch('pyglet.display.get_display')
 def test_scan_displays_force_refresh(mock_get_display, mock_pyglet_screens):
     """Test that force_refresh bypasses cache."""
     mock_get_display.return_value.get_screens.return_value = mock_pyglet_screens
@@ -80,7 +80,7 @@ def test_scan_displays_force_refresh(mock_get_display, mock_pyglet_screens):
 
 
 @pytest.mark.unit
-@patch('pyglet.canvas.get_display')
+@patch('pyglet.display.get_display')
 def test_scan_displays_handles_no_pyglet(mock_get_display):
     """Test graceful handling when pyglet is not available."""
     # Simulate pyglet not available

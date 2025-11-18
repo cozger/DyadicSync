@@ -10,7 +10,7 @@ from typing import Optional, Callable
 
 class BlockType(Enum):
     """Types of blocks that can appear in the timeline."""
-    WELCOME = "welcome"
+    INSTRUCTION = "instruction"
     BASELINE = "baseline"
     FIXATION = "fixation"
     VIDEO = "video"
@@ -19,7 +19,7 @@ class BlockType(Enum):
 
 # Color scheme for E-Prime style blocks
 BLOCK_COLORS = {
-    BlockType.WELCOME: "#4A90E2",     # Blue
+    BlockType.INSTRUCTION: "#4A90E2",     # Blue
     BlockType.BASELINE: "#F5A623",    # Orange/Yellow
     BlockType.FIXATION: "#7ED321",    # Green
     BlockType.VIDEO: "#D0021B",       # Red
@@ -27,7 +27,7 @@ BLOCK_COLORS = {
 }
 
 BLOCK_TEXT_COLOR = {
-    BlockType.WELCOME: "#FFFFFF",
+    BlockType.INSTRUCTION: "#FFFFFF",
     BlockType.BASELINE: "#FFFFFF",
     BlockType.FIXATION: "#FFFFFF",
     BlockType.VIDEO: "#FFFFFF",
@@ -45,20 +45,26 @@ class TimelineBlock:
     def __init__(self, canvas: Canvas, block_type: BlockType, trial_index: int,
                  x: int, y: int, width: int, height: int = 60,
                  on_click: Optional[Callable] = None,
-                 on_double_click: Optional[Callable] = None):
+                 on_double_click: Optional[Callable] = None,
+                 on_drag_start: Optional[Callable] = None,
+                 on_drag_motion: Optional[Callable] = None,
+                 on_drag_end: Optional[Callable] = None):
         """
         Initialize a timeline block.
 
         Args:
             canvas: Tkinter Canvas to draw on
-            block_type: Type of block (welcome, baseline, fixation, video, rating)
-            trial_index: Index of the trial this block belongs to (-1 for welcome/baseline)
+            block_type: Type of block (instruction, baseline, fixation, video, rating)
+            trial_index: Index of the trial this block belongs to (-1 for instruction/baseline)
             x: X coordinate of block's left edge
             y: Y coordinate of block's top edge
             width: Width of block in pixels
             height: Height of block in pixels
             on_click: Callback function when block is clicked
             on_double_click: Callback function when block is double-clicked
+            on_drag_start: Callback when drag starts (receives block, index)
+            on_drag_motion: Callback during drag (receives block, x_pos)
+            on_drag_end: Callback when drag ends (receives block)
         """
         self.canvas = canvas
         self.block_type = block_type
@@ -69,9 +75,20 @@ class TimelineBlock:
         self.height = height
         self.on_click = on_click
         self.on_double_click = on_double_click
+        self.on_drag_start = on_drag_start
+        self.on_drag_motion = on_drag_motion
+        self.on_drag_end = on_drag_end
 
         self.selected = False
         self.hovered = False
+
+        # Drag state
+        self._is_dragging = False
+        self._drag_start_x = 0
+        self._drag_start_y = 0
+        self._original_x = 0
+        self._original_y = 0
+        self._drag_threshold = 5  # Pixels to move before drag starts
 
         # Canvas item IDs
         self.rect_id = None
@@ -131,10 +148,16 @@ class TimelineBlock:
             )
 
         # Bind events
-        self.canvas.tag_bind(self.rect_id, "<Button-1>", self._handle_click)
-        self.canvas.tag_bind(self.text_id, "<Button-1>", self._handle_click)
+        self.canvas.tag_bind(self.rect_id, "<ButtonPress-1>", self._handle_button_press)
+        self.canvas.tag_bind(self.text_id, "<ButtonPress-1>", self._handle_button_press)
+        self.canvas.tag_bind(self.rect_id, "<B1-Motion>", self._handle_drag_motion)
+        self.canvas.tag_bind(self.text_id, "<B1-Motion>", self._handle_drag_motion)
+        self.canvas.tag_bind(self.rect_id, "<ButtonRelease-1>", self._handle_button_release)
+        self.canvas.tag_bind(self.text_id, "<ButtonRelease-1>", self._handle_button_release)
         self.canvas.tag_bind(self.rect_id, "<Double-Button-1>", self._handle_double_click)
         self.canvas.tag_bind(self.text_id, "<Double-Button-1>", self._handle_double_click)
+        self.canvas.tag_bind(self.rect_id, "<Button-3>", self._handle_right_click)
+        self.canvas.tag_bind(self.text_id, "<Button-3>", self._handle_right_click)
         self.canvas.tag_bind(self.rect_id, "<Enter>", self._handle_enter)
         self.canvas.tag_bind(self.text_id, "<Enter>", self._handle_enter)
         self.canvas.tag_bind(self.rect_id, "<Leave>", self._handle_leave)
@@ -142,8 +165,8 @@ class TimelineBlock:
 
     def _get_label(self) -> str:
         """Get display label for this block."""
-        if self.block_type == BlockType.WELCOME:
-            return "Welcome"
+        if self.block_type == BlockType.INSTRUCTION:
+            return "Instruction"
         elif self.block_type == BlockType.BASELINE:
             return "Baseline"
         elif self.block_type == BlockType.FIXATION:
@@ -197,14 +220,77 @@ class TimelineBlock:
         if self.rect_id:
             self.canvas.itemconfig(self.rect_id, fill=fill_color, outline=outline_color, width=outline_width)
 
-    def _handle_click(self, event):
-        """Handle single click event."""
-        if self.on_click:
-            self.on_click(self)
+    def _set_opacity(self, opacity: float):
+        """
+        Set opacity of block (for drag ghost effect).
+
+        Args:
+            opacity: Opacity value from 0.0 (transparent) to 1.0 (opaque)
+        """
+        if self.rect_id:
+            if opacity < 1.0:
+                # Semi-transparent: use stipple pattern to simulate transparency
+                self.canvas.itemconfig(self.rect_id, stipple='gray50')
+            else:
+                # Opaque: remove stipple
+                self.canvas.itemconfig(self.rect_id, stipple='')
+
+    def _handle_button_press(self, event):
+        """Handle mouse button press - prepare for potential drag."""
+        self._drag_start_x = event.x
+        self._drag_start_y = event.y
+        self._original_x = self.x
+        self._original_y = self.y
+        self._is_dragging = False  # Will be set to True if drag threshold exceeded
+
+    def _handle_drag_motion(self, event):
+        """Handle mouse drag motion."""
+        # Check if we've moved enough to start dragging
+        dx = event.x - self._drag_start_x
+        dy = event.y - self._drag_start_y
+        distance = (dx**2 + dy**2)**0.5
+
+        if not self._is_dragging and distance > self._drag_threshold:
+            # Start drag
+            self._is_dragging = True
+            self._set_opacity(0.5)  # Semi-transparent ghost effect
+            if self.on_drag_start:
+                self.on_drag_start(self, self.trial_index)
+
+        if self._is_dragging:
+            # Move block with mouse
+            new_x = self._original_x + dx
+            new_y = self._original_y  # Only allow horizontal dragging
+            self.set_position(new_x, new_y)
+
+            # Notify parent canvas of drag motion
+            if self.on_drag_motion:
+                self.on_drag_motion(self, event.x_root)
+
+    def _handle_button_release(self, event):
+        """Handle mouse button release - complete drag or trigger click."""
+        if self._is_dragging:
+            # Complete drag
+            self._is_dragging = False
+            self._set_opacity(1.0)  # Restore full opacity
+            if self.on_drag_end:
+                self.on_drag_end(self)
+        else:
+            # This was a click, not a drag
+            if self.on_click:
+                self.on_click(self)
+
+    def _handle_right_click(self, event):
+        """Handle right-click during drag - cancel drag operation."""
+        if self._is_dragging:
+            # Cancel drag - return to original position
+            self._is_dragging = False
+            self.set_position(self._original_x, self._original_y)
+            self._set_opacity(1.0)  # Restore full opacity
 
     def _handle_double_click(self, event):
         """Handle double click event."""
-        if self.on_double_click:
+        if not self._is_dragging and self.on_double_click:
             self.on_double_click(self)
 
     def _handle_enter(self, event):
@@ -279,7 +365,8 @@ class TimelineBlock:
     def redraw(self):
         """Redraw the block (useful after state changes)."""
         # Unbind events before deleting to prevent memory leaks
-        event_types = ["<Button-1>", "<Double-Button-1>", "<Enter>", "<Leave>"]
+        event_types = ["<ButtonPress-1>", "<B1-Motion>", "<ButtonRelease-1>",
+                       "<Double-Button-1>", "<Button-3>", "<Enter>", "<Leave>"]
 
         if self.rect_id:
             for event_type in event_types:
@@ -314,7 +401,8 @@ class TimelineBlock:
     def delete(self):
         """Remove this block from the canvas."""
         # Unbind events before deleting
-        event_types = ["<Button-1>", "<Double-Button-1>", "<Enter>", "<Leave>"]
+        event_types = ["<ButtonPress-1>", "<B1-Motion>", "<ButtonRelease-1>",
+                       "<Double-Button-1>", "<Button-3>", "<Enter>", "<Leave>"]
 
         if self.rect_id:
             for event_type in event_types:

@@ -125,7 +125,7 @@ class DeviceScanner:
             return self._displays_cache
 
         try:
-            display = pyglet.canvas.get_display()
+            display = pyglet.display.get_display()
             screens = display.get_screens()
 
             displays = []

@@ -5,16 +5,15 @@ Allows configuration of experiment-level settings stored in Timeline.metadata.
 """
 
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, filedialog
 from typing import Dict, Any, List
 import sys
+import os
 from pathlib import Path
 
 sys.path.append(str(Path(__file__).parent.parent.parent))
 
 from timeline_editor.dialogs.base_dialog import FormDialog
-from timeline_editor.dialogs.widgets import DurationPicker
-from core.device_scanner import DeviceScanner
 
 
 class ExperimentSettingsDialog(FormDialog):
@@ -23,9 +22,11 @@ class ExperimentSettingsDialog(FormDialog):
 
     Settings:
     - Experiment name and description
-    - Audio devices (P1 and P2)
-    - Baseline duration
+    - Output directory
     - LSL settings (stream name, enabled/disabled)
+    - LabRecorder auto-start (RCS host/port)
+
+    Note: Audio devices and displays are configured via Device Setup dialog.
     """
 
     def __init__(self, parent, current_metadata: Dict[str, Any]):
@@ -37,44 +38,15 @@ class ExperimentSettingsDialog(FormDialog):
             current_metadata: Current Timeline.metadata dictionary
         """
         self.current_metadata = current_metadata.copy()
-        self.audio_devices = []
-        self.device_scanner = None
-
-        # Scan for audio devices
-        self._scan_devices()
 
         super().__init__(parent, "Experiment Settings", width=500, height=600)
 
-    def _scan_devices(self):
-        """Scan for available audio devices."""
-        try:
-            self.device_scanner = DeviceScanner()
-            devices = self.device_scanner.scan_audio_devices()
-            self.audio_devices = devices.get('all', [])
-        except Exception as e:
-            print(f"Warning: Could not scan audio devices: {e}")
-            self.audio_devices = []
-
     def _build_content(self, content_frame: ttk.Frame):
         """Build dialog content."""
-        # Scrollable frame for all settings
-        canvas = tk.Canvas(content_frame, highlightthickness=0)
-        scrollbar = ttk.Scrollbar(content_frame, orient="vertical", command=canvas.yview)
-        scrollable_frame = ttk.Frame(canvas)
-
-        scrollable_frame.bind(
-            "<Configure>",
-            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
-        )
-
-        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
-        canvas.configure(yscrollcommand=scrollbar.set)
-
-        canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
+        # content_frame is already scrollable from BaseDialog - no canvas needed
 
         # === General Settings ===
-        general_frame = ttk.LabelFrame(scrollable_frame, text="General", padding=10)
+        general_frame = ttk.LabelFrame(content_frame, text="General", padding=10)
         general_frame.pack(fill=tk.X, padx=5, pady=5)
 
         self.add_text_field(
@@ -93,102 +65,53 @@ class ExperimentSettingsDialog(FormDialog):
             height=3
         )
 
-        # === Device Setup Note ===
-        note_frame = ttk.Frame(scrollable_frame)
-        note_frame.pack(fill=tk.X, padx=5, pady=(5, 0))
+        # === Output Directory ===
+        output_frame = ttk.LabelFrame(content_frame, text="Data Output", padding=10)
+        output_frame.pack(fill=tk.X, padx=5, pady=5)
 
-        note_label = ttk.Label(
-            note_frame,
-            text="💡 For display configuration (monitors), use the Device Setup button in the toolbar.",
-            font=('Arial', 9, 'italic'),
-            foreground='#666666',
-            wraplength=450
-        )
-        note_label.pack(anchor='w', padx=10)
+        # Output directory field with browse button
+        output_dir_row = ttk.Frame(output_frame)
+        output_dir_row.pack(fill=tk.X, pady=5)
 
-        # === Audio Devices ===
-        audio_frame = ttk.LabelFrame(scrollable_frame, text="Audio Devices", padding=10)
-        audio_frame.pack(fill=tk.X, padx=5, pady=5)
+        ttk.Label(output_dir_row, text="Output Directory:", width=15, anchor=tk.W).pack(side=tk.LEFT, padx=5)
 
-        # Build device options for dropdown
-        if self.audio_devices:
-            device_options = [
-                f"{dev['index']}: {dev['name']}" for dev in self.audio_devices
-            ]
-        else:
-            device_options = ["No devices found"]
+        self.output_dir_var = tk.StringVar(value=self.current_metadata.get('output_directory', '') or '')
+        output_dir_entry = ttk.Entry(output_dir_row, textvariable=self.output_dir_var, width=30)
+        output_dir_entry.pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
 
-        # P1 audio device
-        current_p1 = self.current_metadata.get('audio_device_1')
-        p1_default = self._find_device_display(current_p1) if current_p1 is not None else ""
-
-        self.add_dropdown(
-            audio_frame,
-            "Participant 1:",
-            "audio_device_1",
-            options=device_options,
-            default=p1_default
-        )
-
-        # Test button for P1
-        p1_test_frame = ttk.Frame(audio_frame)
-        p1_test_frame.pack(fill=tk.X, pady=2)
-        ttk.Label(p1_test_frame, text="", width=15).pack(side=tk.LEFT)  # Spacer
         ttk.Button(
-            p1_test_frame,
-            text="Test Audio",
-            command=lambda: self._test_audio(1)
-        ).pack(side=tk.LEFT)
+            output_dir_row,
+            text="Browse...",
+            command=self._browse_output_directory
+        ).pack(side=tk.LEFT, padx=5)
 
-        # P2 audio device
-        current_p2 = self.current_metadata.get('audio_device_2')
-        p2_default = self._find_device_display(current_p2) if current_p2 is not None else ""
-
-        self.add_dropdown(
-            audio_frame,
-            "Participant 2:",
-            "audio_device_2",
-            options=device_options,
-            default=p2_default
+        # Validation indicator
+        self.output_dir_status_label = ttk.Label(
+            output_frame,
+            text="",
+            font=("Arial", 8),
+            foreground="gray"
         )
+        self.output_dir_status_label.pack(fill=tk.X, pady=(0, 5))
 
-        # Test button for P2
-        p2_test_frame = ttk.Frame(audio_frame)
-        p2_test_frame.pack(fill=tk.X, pady=2)
-        ttk.Label(p2_test_frame, text="", width=15).pack(side=tk.LEFT)  # Spacer
-        ttk.Button(
-            p2_test_frame,
-            text="Test Audio",
-            command=lambda: self._test_audio(2)
-        ).pack(side=tk.LEFT)
+        # Update status when directory changes
+        self.output_dir_var.trace_add('write', lambda *args: self._check_output_directory())
+        self._check_output_directory()  # Initial check
 
-        # Rescan button
-        rescan_frame = ttk.Frame(audio_frame)
-        rescan_frame.pack(fill=tk.X, pady=5)
-        ttk.Label(rescan_frame, text="", width=15).pack(side=tk.LEFT)  # Spacer
-        ttk.Button(
-            rescan_frame,
-            text="Rescan Devices",
-            command=self._rescan_devices
-        ).pack(side=tk.LEFT)
-
-        # === Baseline Settings ===
-        baseline_frame = ttk.LabelFrame(scrollable_frame, text="Baseline", padding=10)
-        baseline_frame.pack(fill=tk.X, padx=5, pady=5)
-
-        # Duration picker
-        self.baseline_duration = DurationPicker(
-            baseline_frame,
-            label="Duration:",
-            default_seconds=self.current_metadata.get('baseline_duration', 240),
-            min_seconds=10,
-            max_seconds=600,
-            show_formatted=True
+        # Info about data saving
+        info_label = ttk.Label(
+            output_frame,
+            text="⚠️ Output directory is required to run experiments.\n"
+                 "Data files will be saved with format: sub-{ID}_ses-{#}_{timestamp}.csv",
+            font=("Arial", 8),
+            foreground="#666666",
+            wraplength=450,
+            justify=tk.LEFT
         )
-        self.baseline_duration.pack(fill=tk.X, pady=5)
+        info_label.pack(fill=tk.X, pady=(5, 0))
 
         # === LSL Settings ===
-        lsl_frame = ttk.LabelFrame(scrollable_frame, text="LSL (Lab Streaming Layer)", padding=10)
+        lsl_frame = ttk.LabelFrame(content_frame, text="LSL (Lab Streaming Layer)", padding=10)
         lsl_frame.pack(fill=tk.X, padx=5, pady=5)
 
         self.add_checkbox(
@@ -218,93 +141,173 @@ class ExperimentSettingsDialog(FormDialog):
         )
         info_label.pack(fill=tk.X, pady=(5, 0))
 
-    def _find_device_display(self, device_index: int) -> str:
-        """
-        Find display string for device index.
+        # === LabRecorder Settings ===
+        labrecorder_frame = ttk.LabelFrame(content_frame, text="LabRecorder Auto-Start", padding=10)
+        labrecorder_frame.pack(fill=tk.X, padx=5, pady=5)
 
-        Args:
-            device_index: Device index
+        # Enable checkbox
+        self.add_checkbox(
+            labrecorder_frame,
+            "Enable LabRecorder auto-start",
+            "labrecorder_enabled",
+            default=self.current_metadata.get('labrecorder_enabled', False)
+        )
 
-        Returns:
-            Display string like "9: Device Name"
-        """
-        for dev in self.audio_devices:
-            if dev['index'] == device_index:
-                return f"{dev['index']}: {dev['name']}"
-        return ""
+        # RCS host
+        self.add_text_field(
+            labrecorder_frame,
+            "RCS Host:",
+            "labrecorder_host",
+            default=self.current_metadata.get('labrecorder_host', 'localhost'),
+            width=35
+        )
 
-    def _parse_device_index(self, display_str: str) -> int:
-        """
-        Parse device index from display string.
+        # RCS port
+        self.add_text_field(
+            labrecorder_frame,
+            "RCS Port:",
+            "labrecorder_port",
+            default=str(self.current_metadata.get('labrecorder_port', 22345)),
+            width=10
+        )
 
-        Args:
-            display_str: String like "9: Device Name"
+        # Test connection button
+        test_conn_frame = ttk.Frame(labrecorder_frame)
+        test_conn_frame.pack(fill=tk.X, pady=5)
+        ttk.Label(test_conn_frame, text="", width=15).pack(side=tk.LEFT)  # Spacer
+        ttk.Button(
+            test_conn_frame,
+            text="Test Connection",
+            command=self._test_labrecorder_connection
+        ).pack(side=tk.LEFT)
 
-        Returns:
-            Device index (or None if invalid)
-        """
+        self.labrecorder_status_label = ttk.Label(
+            test_conn_frame,
+            text="",
+            font=("Arial", 9),
+            foreground="gray"
+        )
+        self.labrecorder_status_label.pack(side=tk.LEFT, padx=10)
+
+        # Info label
+        lr_info_label = ttk.Label(
+            labrecorder_frame,
+            text="⚠️ LabRecorder must be running with Remote Control Socket enabled.\n"
+                 "Auto-start will record ALL available LSL streams (EEG, Markers, face sync, etc.)\n"
+                 "Filename format: sub-{ID:03d}_ses-{#:02d}_{task}.xdf",
+            font=("Arial", 8),
+            foreground="gray",
+            wraplength=400,
+            justify=tk.LEFT
+        )
+        lr_info_label.pack(fill=tk.X, pady=(5, 0))
+
+    def _test_labrecorder_connection(self):
+        """Test connection to LabRecorder RCS."""
+        host = self.form_vars['labrecorder_host'].get().strip()
+        port_str = self.form_vars['labrecorder_port'].get().strip()
+
+        # Validate port
         try:
-            return int(display_str.split(':')[0])
-        except (ValueError, IndexError):
-            return None
-
-    def _test_audio(self, participant: int):
-        """
-        Test audio device with sine wave.
-
-        Args:
-            participant: 1 or 2
-        """
-        device_key = f"audio_device_{participant}"
-        display_str = self.form_vars[device_key].get()
-
-        if display_str == "No devices found":
-            messagebox.showwarning("No Device", "No audio devices available")
+            port = int(port_str)
+            if not (1 <= port <= 65535):
+                raise ValueError("Port must be between 1 and 65535")
+        except ValueError as e:
+            self.labrecorder_status_label.config(
+                text=f"❌ Invalid port",
+                foreground="red"
+            )
+            messagebox.showerror("Invalid Port", f"Port must be a valid number (1-65535)")
             return
 
-        device_index = self._parse_device_index(display_str)
-
-        if device_index is None:
-            messagebox.showwarning("Invalid Device", "Please select a valid audio device")
-            return
+        # Try to connect
+        self.labrecorder_status_label.config(
+            text="⏳ Connecting...",
+            foreground="orange"
+        )
+        self.labrecorder_status_label.update()
 
         try:
-            from core.device_manager import DeviceManager
+            from core.labrecorder_control import LabRecorderController
 
-            # Create temporary device manager
-            dm = DeviceManager()
+            controller = LabRecorderController(host=host, port=port, timeout=3.0)
+            success = controller.connect()
+            controller.close()
 
-            # Test audio
-            messagebox.showinfo(
-                "Testing Audio",
-                f"Playing test tone on device {device_index}...\n\n"
-                f"You should hear a 440Hz sine wave for 1 second."
+            if success:
+                self.labrecorder_status_label.config(
+                    text="✓ Connected",
+                    foreground="green"
+                )
+                messagebox.showinfo(
+                    "Connection Successful",
+                    f"Successfully connected to LabRecorder at {host}:{port}\n\n"
+                    "LabRecorder is ready for auto-start."
+                )
+            else:
+                self.labrecorder_status_label.config(
+                    text="❌ Failed",
+                    foreground="red"
+                )
+                messagebox.showerror(
+                    "Connection Failed",
+                    f"Could not connect to LabRecorder at {host}:{port}\n\n"
+                    "Make sure:\n"
+                    "1. LabRecorder is running\n"
+                    "2. Remote Control Socket (RCS) is enabled in LabRecorder settings\n"
+                    "3. Host and port are correct"
+                )
+        except Exception as e:
+            self.labrecorder_status_label.config(
+                text="❌ Error",
+                foreground="red"
+            )
+            messagebox.showerror(
+                "Connection Error",
+                f"Error testing connection:\n\n{str(e)}"
             )
 
-            dm.test_audio_device(device_index, duration=1.0)
+    def _browse_output_directory(self):
+        """Browse for output directory."""
+        initial_dir = self.output_dir_var.get() or os.path.expanduser("~")
 
-            messagebox.showinfo("Test Complete", "Audio test completed successfully!")
+        directory = filedialog.askdirectory(
+            title="Select Output Directory",
+            initialdir=initial_dir
+        )
 
-        except Exception as e:
-            messagebox.showerror("Test Failed", f"Audio test failed:\n\n{str(e)}")
+        if directory:
+            self.output_dir_var.set(directory)
 
-    def _rescan_devices(self):
-        """Rescan audio devices and update dropdowns."""
-        self._scan_devices()
+    def _check_output_directory(self):
+        """Check if output directory is valid and update status label."""
+        output_dir = self.output_dir_var.get().strip()
 
-        # Update device options
-        if self.audio_devices:
-            device_options = [
-                f"{dev['index']}: {dev['name']}" for dev in self.audio_devices
-            ]
+        if not output_dir:
+            self.output_dir_status_label.config(
+                text="⚠️ No directory selected - required for running experiments",
+                foreground="orange"
+            )
+        elif not os.path.exists(output_dir):
+            self.output_dir_status_label.config(
+                text="❌ Directory does not exist",
+                foreground="red"
+            )
+        elif not os.path.isdir(output_dir):
+            self.output_dir_status_label.config(
+                text="❌ Path is not a directory",
+                foreground="red"
+            )
+        elif not os.access(output_dir, os.W_OK):
+            self.output_dir_status_label.config(
+                text="❌ Directory is not writable",
+                foreground="red"
+            )
         else:
-            device_options = ["No devices found"]
-
-        # Update comboboxes
-        self.form_widgets['audio_device_1'].config(values=device_options)
-        self.form_widgets['audio_device_2'].config(values=device_options)
-
-        messagebox.showinfo("Rescan Complete", f"Found {len(self.audio_devices)} audio devices")
+            self.output_dir_status_label.config(
+                text="✓ Directory is valid and writable",
+                foreground="green"
+            )
 
     def _validate(self) -> List[str]:
         """Validate experiment settings."""
@@ -315,22 +318,26 @@ class ExperimentSettingsDialog(FormDialog):
         if not name:
             errors.append("Experiment name is required")
 
-        # Validate audio devices
-        p1_device = self.form_vars['audio_device_1'].get()
-        p2_device = self.form_vars['audio_device_2'].get()
-
-        if p1_device == "No devices found" or p2_device == "No devices found":
-            errors.append("Audio devices must be configured")
-
-        # Check if same device selected for both
-        if p1_device and p2_device and p1_device == p2_device:
-            errors.append("Participants must use different audio devices")
-
         # Validate LSL stream name
         if self.form_vars['lsl_enabled'].get():
             stream_name = self.form_vars['lsl_stream_name'].get().strip()
             if not stream_name:
                 errors.append("LSL stream name is required when LSL is enabled")
+
+        # Validate LabRecorder settings
+        if self.form_vars['labrecorder_enabled'].get():
+            host = self.form_vars['labrecorder_host'].get().strip()
+            port_str = self.form_vars['labrecorder_port'].get().strip()
+
+            if not host:
+                errors.append("LabRecorder host is required when auto-start is enabled")
+
+            try:
+                port = int(port_str)
+                if not (1 <= port <= 65535):
+                    errors.append("LabRecorder port must be between 1 and 65535")
+            except ValueError:
+                errors.append("LabRecorder port must be a valid number")
 
         return errors
 
@@ -338,19 +345,23 @@ class ExperimentSettingsDialog(FormDialog):
         """Collect experiment settings."""
         form_values = self.get_form_values()
 
-        # Parse device indices
-        p1_device = self._parse_device_index(form_values['audio_device_1'])
-        p2_device = self._parse_device_index(form_values['audio_device_2'])
+        # Get output directory (use empty string if not set, not None)
+        output_dir = self.output_dir_var.get().strip()
 
-        # Get baseline duration
-        baseline_duration = self.baseline_duration.get()
+        # Parse LabRecorder port
+        labrecorder_port = 22345  # Default
+        try:
+            labrecorder_port = int(form_values['labrecorder_port'])
+        except (ValueError, KeyError):
+            pass
 
         return {
             'name': form_values['name'].strip(),
             'description': form_values['description'].strip(),
-            'audio_device_1': p1_device,
-            'audio_device_2': p2_device,
-            'baseline_duration': baseline_duration,
+            'output_directory': output_dir if output_dir else None,
             'lsl_enabled': form_values['lsl_enabled'],
-            'lsl_stream_name': form_values['lsl_stream_name'].strip()
+            'lsl_stream_name': form_values['lsl_stream_name'].strip(),
+            'labrecorder_enabled': form_values['labrecorder_enabled'],
+            'labrecorder_host': form_values['labrecorder_host'].strip(),
+            'labrecorder_port': labrecorder_port
         }

@@ -42,7 +42,7 @@ class BaseDialog(tk.Toplevel):
                 return {'name': self.my_var.get()}
     """
 
-    def __init__(self, parent, title: str = "Dialog", width: int = 400, height: int = 300):
+    def __init__(self, parent, title: str = "Dialog", width: int = 400, height: int = None):
         """
         Initialize base dialog.
 
@@ -50,29 +50,30 @@ class BaseDialog(tk.Toplevel):
             parent: Parent window
             title: Dialog title
             width: Dialog width in pixels
-            height: Dialog height in pixels
+            height: Dialog height in pixels (None for dynamic sizing)
         """
         super().__init__(parent)
 
         self.result: Optional[Dict[str, Any]] = None
         self.validation_errors: List[str] = []
+        self._parent = parent
+        self._width = width
+        self._fixed_height = height
 
         # Configure dialog
         self.title(title)
-        self.geometry(f"{width}x{height}")
+        # Set initial geometry (will be adjusted after content is built)
+        if height is not None:
+            self.geometry(f"{width}x{height}")
+        else:
+            self.geometry(f"{width}x100")  # Temporary small height for dynamic sizing
         self.transient(parent)
         self.resizable(True, True)
 
         # E-Prime style colors
         self.configure(bg="#F0F0F0")
 
-        # Center on parent
-        self.update_idletasks()
-        x = parent.winfo_x() + (parent.winfo_width() // 2) - (width // 2)
-        y = parent.winfo_y() + (parent.winfo_height() // 2) - (height // 2)
-        self.geometry(f"{width}x{height}+{x}+{y}")
-
-        # Build UI
+        # Build UI (centering will happen after content is built)
         self._build_ui()
 
         # Modal behavior
@@ -94,14 +95,33 @@ class BaseDialog(tk.Toplevel):
             )
             desc_label.pack(pady=(10, 5), padx=10)
 
-        # Content frame (scrollable if needed)
-        self.content_frame = ttk.Frame(self)
-        self.content_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        # Create scrollable content area
+        content_container = ttk.Frame(self)
+        content_container.pack(fill=tk.BOTH, expand=True, padx=10, pady=(10, 0))
+
+        # Canvas for scrolling
+        self.content_canvas = tk.Canvas(content_container, bg="#F0F0F0", highlightthickness=0)
+        self.content_scrollbar = ttk.Scrollbar(content_container, orient=tk.VERTICAL, command=self.content_canvas.yview)
+
+        # Scrollable frame inside canvas
+        self.content_frame = ttk.Frame(self.content_canvas)
+        self.content_frame.bind("<Configure>", self._on_content_configure)
+
+        self.content_canvas.create_window((0, 0), window=self.content_frame, anchor=tk.NW)
+        self.content_canvas.configure(yscrollcommand=self.content_scrollbar.set)
+
+        # Pack canvas and scrollbar
+        self.content_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.content_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        # Enable mousewheel scrolling (bind to canvas, not globally)
+        self.content_canvas.bind("<Enter>", lambda e: self.content_canvas.bind_all("<MouseWheel>", self._on_mousewheel))
+        self.content_canvas.bind("<Leave>", lambda e: self.content_canvas.unbind_all("<MouseWheel>"))
 
         # Let subclass build content
         self._build_content(self.content_frame)
 
-        # Validation error label
+        # Validation error label (fixed at bottom)
         self.error_label = ttk.Label(
             self,
             text="",
@@ -109,11 +129,11 @@ class BaseDialog(tk.Toplevel):
             font=("Arial", 9),
             wraplength=self.winfo_reqwidth() - 40
         )
-        self.error_label.pack(pady=(0, 5), padx=10)
+        self.error_label.pack(pady=(0, 0), padx=10)
 
-        # Button frame
+        # Button frame (fixed at bottom)
         button_frame = ttk.Frame(self)
-        button_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=10, pady=10)
+        button_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=10, pady=(0, 10))
 
         # Buttons (right-aligned)
         ttk.Button(
@@ -132,6 +152,36 @@ class BaseDialog(tk.Toplevel):
         # Bind Enter/Escape
         self.bind("<Return>", lambda e: self._on_ok())
         self.bind("<Escape>", lambda e: self._on_cancel())
+
+        # Apply dynamic sizing and centering (if height not fixed)
+        if self._fixed_height is None:
+            self._apply_dynamic_size()
+
+    def _apply_dynamic_size(self):
+        """Apply dynamic height based on content and center on parent."""
+        self.update_idletasks()  # Calculate actual content size
+
+        # Get required height from content
+        required_height = self.winfo_reqheight()
+
+        # Apply size with width and calculated height
+        self.geometry(f"{self._width}x{required_height}")
+
+        # Center on parent
+        x = self._parent.winfo_x() + (self._parent.winfo_width() // 2) - (self._width // 2)
+        y = self._parent.winfo_y() + (self._parent.winfo_height() // 2) - (required_height // 2)
+        self.geometry(f"{self._width}x{required_height}+{x}+{y}")
+
+        # Set minimum size to prevent too-small windows
+        self.minsize(self._width, required_height)
+
+    def _on_content_configure(self, event):
+        """Update scroll region when content changes."""
+        self.content_canvas.configure(scrollregion=self.content_canvas.bbox("all"))
+
+    def _on_mousewheel(self, event):
+        """Handle mousewheel scrolling."""
+        self.content_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
 
     def _build_content(self, content_frame: ttk.Frame):
         """
@@ -186,6 +236,14 @@ class BaseDialog(tk.Toplevel):
         self.result = None
         self.grab_release()
         self.destroy()
+
+    def destroy(self):
+        """Override destroy to ensure mouse wheel events are unbound."""
+        try:
+            self.content_canvas.unbind_all("<MouseWheel>")
+        except (AttributeError, tk.TclError):
+            pass  # Canvas already destroyed or doesn't exist
+        super().destroy()
 
     def show(self) -> Optional[Dict[str, Any]]:
         """

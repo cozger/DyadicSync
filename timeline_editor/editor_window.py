@@ -35,8 +35,8 @@ def create_default_timeline() -> Timeline:
 
     timeline = Timeline(name="New Experiment")
 
-    # Welcome block
-    welcome_block = Block(name="Welcome", block_type='simple')
+    # Welcome block (renamed to "Text" as default)
+    welcome_block = Block(name="Text", block_type='simple')
     welcome_proc = Procedure("Welcome Screen")
     welcome_proc.add_phase(InstructionPhase(
         text="Welcome to the experiment!\n\nPress SPACE to continue.",
@@ -104,21 +104,7 @@ class EditorWindow(tk.Tk):
         # Handle window close
         self.protocol("WM_DELETE_WINDOW", self._on_closing)
 
-        # Start heartbeat timer for diagnostics
-        self.after(100, self._heartbeat)
-
         print(f"[DEBUG {time.time():.3f}] EditorWindow.__init__ COMPLETE")
-
-    def _heartbeat(self):
-        """Periodic heartbeat to verify mainloop is running."""
-        try:
-            print(f"[HEARTBEAT {time.time():.3f}] Window visible={self.winfo_viewable()}, "
-                  f"size={self.winfo_width()}x{self.winfo_height()}, "
-                  f"mapped={self.winfo_ismapped()}", flush=True)
-        except Exception as e:
-            print(f"[HEARTBEAT ERROR] {e}", flush=True)
-        # Schedule next heartbeat
-        self.after(1000, self._heartbeat)
 
     def _setup_menubar(self):
         """Create the menu bar."""
@@ -231,6 +217,7 @@ class EditorWindow(tk.Tk):
         print(f"[DEBUG {time.time():.3f}] Creating PropertyPanel...")
         self.property_panel = PropertyPanel(
             top_pane,
+            timeline=self.timeline,
             on_change=self._on_property_change
         )
         print(f"[DEBUG {time.time():.3f}] PropertyPanel created, adding to pane...")
@@ -268,10 +255,33 @@ class EditorWindow(tk.Tk):
             text=f"Blocks: {block_count} | Trials: {total_trials}"
         )
 
-        duration = self.timeline.get_estimated_duration()
-        mins = int(duration // 60)
-        secs = int(duration % 60)
-        self.duration_label.config(text=f"Duration: ~{mins:02d}:{secs:02d}")
+        # Calculate total duration, using accurate durations if available
+        total_duration = 0.0
+        has_accurate = False
+        has_estimated = False
+
+        for block in self.timeline.blocks:
+            # Check if block has calculated accurate duration
+            if hasattr(block, '_cached_duration') and block._cached_duration is not None:
+                total_duration += block._cached_duration
+                has_accurate = True
+            else:
+                # Fall back to estimated duration
+                block_duration = block.get_estimated_duration()
+                if block_duration >= 0:
+                    total_duration += block_duration
+                    has_estimated = True
+                else:
+                    # Unknown duration, skip but mark as estimated
+                    has_estimated = True
+
+        # Format duration display
+        mins = int(total_duration // 60)
+        secs = int(total_duration % 60)
+
+        # Show ~ prefix if any blocks use estimated duration
+        prefix = "~" if has_estimated or not has_accurate else ""
+        self.duration_label.config(text=f"Duration: {prefix}{mins:02d}:{secs:02d}")
 
     def _set_modified(self, modified: bool = True):
         """Mark timeline as modified."""
@@ -324,6 +334,7 @@ class EditorWindow(tk.Tk):
             self.current_file = None
             self.modified = False
             self.timeline_canvas.timeline = self.timeline
+            self.property_panel.timeline = self.timeline  # Update timeline reference for validation
             self.timeline_canvas.refresh()
             self.property_panel.clear()
             self.preview_panel.clear()
@@ -351,6 +362,15 @@ class EditorWindow(tk.Tk):
                 self.current_file = filename
                 self.modified = False
                 self.timeline_canvas.timeline = timeline
+                self.property_panel.timeline = timeline  # Update timeline reference for validation
+
+                # Calculate accurate durations for all blocks with CSV trial lists
+                print("[TIMELINE_LOAD] Calculating durations for blocks with CSV trial lists...")
+                for block in timeline.blocks:
+                    if block.trial_list and block.trial_list.source and block.trial_list.source_type == 'csv':
+                        print(f"[TIMELINE_LOAD] Calculating duration for block: {block.name}")
+                        block.calculate_accurate_duration()
+
                 self.timeline_canvas.refresh()
                 self.property_panel.clear()
                 self.preview_panel.clear()
@@ -400,6 +420,29 @@ class EditorWindow(tk.Tk):
                 return False
         return False
 
+    def _generate_unique_block_name(self, base_name: str) -> str:
+        """
+        Generate a unique block name by appending a number if needed.
+
+        Args:
+            base_name: Base name to use (e.g., "Baseline")
+
+        Returns:
+            Unique name (e.g., "Baseline" or "Baseline2" if "Baseline" exists)
+        """
+        existing_names = {block.name for block in self.timeline.blocks}
+
+        # If base name doesn't exist, use it as-is
+        if base_name not in existing_names:
+            return base_name
+
+        # Find next available number
+        counter = 2
+        while f"{base_name}{counter}" in existing_names:
+            counter += 1
+
+        return f"{base_name}{counter}"
+
     def _import_legacy_config(self):
         """Import a legacy ExperimentConfig and convert to Timeline."""
         if not self._check_save_modified():
@@ -427,6 +470,7 @@ class EditorWindow(tk.Tk):
                 self.timeline = timeline
                 self.current_file = None  # Force save as
                 self.timeline_canvas.timeline = timeline
+                self.property_panel.timeline = timeline  # Update timeline reference for validation
                 self.timeline_canvas.refresh()
                 self._update_statusbar()
                 self._set_modified(True)
@@ -459,14 +503,16 @@ class EditorWindow(tk.Tk):
 
             if block_type == 'baseline':
                 from core.execution.phases.baseline_phase import BaselinePhase
-                block = Block(name="Baseline", block_type='simple')
+                unique_name = self._generate_unique_block_name("Baseline")
+                block = Block(name=unique_name, block_type='simple')
                 proc = Procedure("Baseline")
                 proc.add_phase(BaselinePhase(duration=self.timeline.metadata.get('baseline_duration', 240)))
                 block.procedure = proc
 
             elif block_type == 'instruction':
                 from core.execution.phases.instruction_phase import InstructionPhase
-                block = Block(name="Instruction", block_type='simple')
+                unique_name = self._generate_unique_block_name("Instruction")
+                block = Block(name=unique_name, block_type='simple')
                 proc = Procedure("Instruction")
                 proc.add_phase(InstructionPhase(
                     text="Instruction text here...",
@@ -481,7 +527,8 @@ class EditorWindow(tk.Tk):
                 from core.execution.phases.rating_phase import RatingPhase
                 from core.execution.trial_list import TrialList
 
-                block = Block(name="Video Trials", block_type='trial_based')
+                unique_name = self._generate_unique_block_name("Video Trials")
+                block = Block(name=unique_name, block_type='trial_based')
                 proc = Procedure("Standard Trial")
                 proc.add_phase(FixationPhase(duration=3.0))
                 proc.add_phase(VideoPhase(participant_1_video="{video1}", participant_2_video="{video2}"))
@@ -492,7 +539,8 @@ class EditorWindow(tk.Tk):
                 block.trial_list = TrialList(source="", source_type='manual')
 
             else:  # empty
-                block = Block(name="New Block", block_type='simple')
+                unique_name = self._generate_unique_block_name("New Block")
+                block = Block(name=unique_name, block_type='simple')
                 block.procedure = Procedure("Empty Procedure")
 
             self.timeline.add_block(block)
@@ -517,7 +565,9 @@ class EditorWindow(tk.Tk):
                 # Serialize and deserialize to create a deep copy
                 block_data = original_block.to_dict()
                 new_block = Block.from_dict(block_data)
-                new_block.name = f"{original_block.name} (Copy)"
+
+                # Generate unique name for the duplicate
+                new_block.name = self._generate_unique_block_name(original_block.name)
 
                 # Insert after the selected block
                 self.timeline.add_block(new_block, index=selected_index + 1)
@@ -730,17 +780,60 @@ class EditorWindow(tk.Tk):
             """Launch the experiment execution."""
             dialog.destroy()
 
-            # TODO Phase 2: Actually execute the timeline
-            messagebox.showinfo(
-                "Execution",
-                "Experiment execution will be fully integrated in a future phase.\n\n"
-                "The timeline is ready and validated.\n\n"
-                "For now, use the legacy WithBaseline.py script for actual execution."
-            )
+            # 1. Check output directory configuration
+            output_dir = self.timeline.metadata.get('output_directory')
+            if not output_dir:
+                messagebox.showerror(
+                    "Configuration Error",
+                    "No output directory configured.\n\n"
+                    "Please set an output directory in Experiment > Settings before running."
+                )
+                return
 
-            # from core.execution.experiment import Experiment
-            # experiment = Experiment(self.timeline)
-            # experiment.run()
+            # Validate output directory
+            import os
+            if not os.path.exists(output_dir):
+                messagebox.showerror(
+                    "Configuration Error",
+                    f"Output directory does not exist:\n{output_dir}\n\n"
+                    "Please check your settings."
+                )
+                return
+
+            # 2. Prompt for subject/session info
+            from timeline_editor.dialogs.pre_execution_dialog import SubjectSessionDialog
+            subject_session = SubjectSessionDialog.prompt(self)
+            if subject_session is None:  # User cancelled
+                return
+
+            subject_id, session = subject_session
+
+            # 3. Prompt for headset selection
+            from timeline_editor.dialogs.pre_execution_dialog import HeadsetSelectionDialog
+            headset = HeadsetSelectionDialog.prompt(self)
+            if headset is None:  # User cancelled
+                return
+
+            # 4. Show progress dialog and run in subprocess
+            try:
+                from timeline_editor.dialogs.execution_dialog import ExecutionProgressDialog
+
+                # Pass timeline and config to dialog
+                # Dialog will serialize and pass to subprocess
+                ExecutionProgressDialog.run_experiment(
+                    self,
+                    timeline=self.timeline,
+                    subject_id=subject_id,
+                    session=session,
+                    headset=headset,
+                    output_dir=output_dir
+                )
+
+            except Exception as e:
+                messagebox.showerror(
+                    "Execution Error",
+                    f"Failed to start experiment:\n\n{str(e)}"
+                )
 
         def cancel():
             dialog.destroy()
@@ -790,4 +883,16 @@ def main():
 
 
 if __name__ == "__main__":
+    # CRITICAL for Windows multiprocessing:
+    # Must call freeze_support() and set start method before any other imports
+    import multiprocessing
+
+    # Required for Windows (enables multiprocessing in frozen executables)
+    multiprocessing.freeze_support()
+
+    # Use 'spawn' start method (required on Windows, prevents Pyglet import in parent)
+    # This ensures Pyglet is only imported in the subprocess, not the GUI process
+    multiprocessing.set_start_method('spawn', force=True)
+
+    # Now safe to run the editor
     main()

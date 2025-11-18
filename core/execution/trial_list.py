@@ -37,6 +37,44 @@ class TrialList:
         self.trials: List[Trial] = []
         self._load_trials()
 
+    def _normalize_trial_data(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Normalize trial data by adding lowercase aliases for common column names.
+
+        This allows templates to use user-friendly names like {video1} while
+        supporting various CSV column naming conventions (VideoPath1, video1, etc.)
+
+        Args:
+            data: Original trial data from CSV row
+
+        Returns:
+            Trial data with added lowercase aliases
+        """
+        # Create column name mapping for common variations
+        column_aliases = {
+            'VideoPath1': 'video1',
+            'VideoPath2': 'video2',
+            'Video1': 'video1',
+            'Video2': 'video2',
+            'video_1': 'video1',
+            'video_2': 'video2',
+            'videopath1': 'video1',
+            'videopath2': 'video2',
+        }
+
+        # Add aliases to data (keep original column names for backward compatibility)
+        normalized = data.copy()
+        for original_col, normalized_col in column_aliases.items():
+            if original_col in data:
+                # Add lowercase alias if it doesn't already exist
+                if normalized_col not in normalized:
+                    normalized[normalized_col] = data[original_col]
+                    # Debug: Log the alias creation
+                    if normalized_col in ['video1', 'video2']:
+                        print(f"[TrialList] Added alias: {original_col} → {normalized_col}")
+
+        return normalized
+
     def _load_trials(self):
         """Load trials from source."""
         if self.source_type == 'csv':
@@ -48,9 +86,12 @@ class TrialList:
 
             # Create trial for each row
             for idx, row in df.iterrows():
+                # Convert row to dict and add normalized aliases
+                trial_data = self._normalize_trial_data(row.to_dict())
+
                 trial = Trial(
                     trial_id=idx,
-                    data=row.to_dict()
+                    data=trial_data
                 )
                 self.trials.append(trial)
 

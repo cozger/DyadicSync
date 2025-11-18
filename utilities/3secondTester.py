@@ -11,6 +11,7 @@ from pyglet.window import key
 from screeninfo import get_monitors
 import numpy as np
 from pylsl import StreamInfo, StreamOutlet
+from config.ffmpeg_config import get_ffmpeg_cmd
 
 # LSL Initiation
 info = StreamInfo(name='ExpEvent_Markers', type='Markers', channel_count=1,
@@ -109,7 +110,7 @@ def show_welcome_screen():
 
     try:
         # Use the same screen setup as videos
-        display = pyglet.canvas.get_display()
+        display = pyglet.display.get_display()
         screens = display.get_screens()
 
         if len(screens) < 3:
@@ -292,7 +293,7 @@ class SynchronizedPlayer:
                         format='wav',
                         acodec='pcm_s16le',
                         y=None
-                    ).run(quiet=True, capture_stdout=True, capture_stderr=True)
+                    ).run(cmd=get_ffmpeg_cmd(), quiet=True, capture_stdout=True, capture_stderr=True)
                 except Exception as e:
                     debug_print(f"FFmpeg error for {self.video_path}: {str(e)}")
                     raise
@@ -453,16 +454,16 @@ def run_video_audio_sync(video1_path, video2_path, audio_device_1_index, audio_d
             window1.clear()
             if cross1.active:
                 cross1.draw()
-            elif player1.player.source and player1.player.get_texture():
-                player1.player.get_texture().blit(0, 0, width=window1.width, height=window1.height)
+            elif player1.player.source and player1.player.texture:
+                player1.player.texture.blit(0, 0, width=window1.width, height=window1.height)
                 
         @window2.event
         def on_draw():
             window2.clear()
             if cross2.active:
                 cross2.draw()
-            elif player2.player.source and player2.player.get_texture():
-                player2.player.get_texture().blit(0, 0, width=window2.width, height=window2.height)
+            elif player2.player.source and player2.player.texture:
+                player2.player.texture.blit(0, 0, width=window2.width, height=window2.height)
         
         def handle_playback_end(dt):
             try:
@@ -699,7 +700,7 @@ def play_video_pairs_consecutively(video_pairs_input, audio_device_1_index, audi
 
         try:
             # Setup displays and windows
-            display = pyglet.canvas.get_display()
+            display = pyglet.display.get_display()
             screens = display.get_screens()
 
             if len(screens) < 3:
@@ -828,15 +829,15 @@ def play_next_pair(pair_index, csvwriter):
         @window1.event
         def on_draw():
             window1.clear()
-            if player1.source and player1.get_texture():
-                player1.get_texture().blit(0, 0, width=window1.width, height=window1.height)
+            if player1.source and player1.texture:
+                player1.texture.blit(0, 0, width=window1.width, height=window1.height)
 
         # Define drawing for Participant 2 window
         @window2.event
         def on_draw():
             window2.clear()
-            if player2.source and player2.get_texture():
-                player2.get_texture().blit(0, 0, width=window2.width, height=window2.height)
+            if player2.source and player2.texture:
+                player2.texture.blit(0, 0, width=window2.width, height=window2.height)
 
         # Play the videos
         player1.play()
