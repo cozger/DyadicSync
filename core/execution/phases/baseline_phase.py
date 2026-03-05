@@ -14,12 +14,15 @@ class BaselinePhase(FixationPhase):
 
     Similar to FixationPhase but specifically for baseline periods.
     Typically longer duration (e.g., 240 seconds) with specific markers.
+    Use display_target to control which participants see the cross.
     """
 
     def __init__(
         self,
         name: str = "Baseline",
-        duration: float = 240.0
+        duration: float = 240.0,
+        display_target: str = "both",
+        observer_text: Optional[str] = None
     ):
         """
         Initialize baseline phase.
@@ -27,6 +30,11 @@ class BaselinePhase(FixationPhase):
         Args:
             name: Phase name
             duration: Duration in seconds (default 240s = 4 minutes)
+            display_target: Which participants see the baseline cross:
+                - "p1": Only P1 sees cross; P2 sees blank screen
+                - "p2": Only P2 sees cross; P1 sees blank screen
+                - "both": Both participants see cross (default)
+            observer_text: Text shown to non-viewer in turn-taking (see FixationPhase)
 
         Note:
             Markers are configured via marker_bindings list.
@@ -34,17 +42,23 @@ class BaselinePhase(FixationPhase):
         """
         super().__init__(
             name=name,
-            duration=duration
+            duration=duration,
+            display_target=display_target,
+            observer_text=observer_text
         )
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize to dictionary."""
-        return {
+        data = {
             'type': 'BaselinePhase',
             'name': self.name,
             'duration': self.duration,
+            'display_target': self.display_target,
             'marker_bindings': [binding.to_dict() for binding in self.marker_bindings]
         }
+        if self.observer_text:
+            data['observer_text'] = self.observer_text
+        return data
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'BaselinePhase':
@@ -53,7 +67,9 @@ class BaselinePhase(FixationPhase):
 
         phase = cls(
             name=data.get('name', 'Baseline'),
-            duration=data.get('duration', 240.0)
+            duration=data.get('duration', 240.0),
+            display_target=data.get('display_target', 'both'),
+            observer_text=data.get('observer_text')
         )
 
         # Load marker bindings

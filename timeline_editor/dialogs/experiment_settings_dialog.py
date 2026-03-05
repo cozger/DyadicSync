@@ -9,6 +9,7 @@ from tkinter import ttk, messagebox, filedialog
 from typing import Dict, Any, List
 import sys
 import os
+import re
 from pathlib import Path
 
 sys.path.append(str(Path(__file__).parent.parent.parent))
@@ -202,6 +203,68 @@ class ExperimentSettingsDialog(FormDialog):
         )
         lr_info_label.pack(fill=tk.X, pady=(5, 0))
 
+        # === Video ID Extraction ===
+        video_id_frame = ttk.LabelFrame(content_frame, text="Video ID Extraction", padding=10)
+        video_id_frame.pack(fill=tk.X, padx=5, pady=5)
+
+        self.add_text_field(
+            video_id_frame,
+            "Regex Pattern:",
+            "video_id_regex",
+            default=self.current_metadata.get('video_id_regex', r'^[A-Za-z]+'),
+            width=35
+        )
+
+        vid_info_label = ttk.Label(
+            video_id_frame,
+            text="Regex pattern stripped from video filenames to extract ID.\n"
+                 "Example: ACCEDE06283.mp4 with pattern ^[A-Za-z]+ yields 06283",
+            font=("Arial", 8),
+            foreground="gray",
+            wraplength=400,
+            justify=tk.LEFT
+        )
+        vid_info_label.pack(fill=tk.X, pady=(0, 5))
+
+        # Test row
+        test_vid_frame = ttk.Frame(video_id_frame)
+        test_vid_frame.pack(fill=tk.X, pady=5)
+
+        ttk.Label(test_vid_frame, text="Test Filename:", width=15, anchor=tk.W).pack(side=tk.LEFT)
+        self.test_filename_var = tk.StringVar(value="ACCEDE06283.mp4")
+        ttk.Entry(test_vid_frame, textvariable=self.test_filename_var, width=20).pack(side=tk.LEFT, padx=(0, 5))
+        ttk.Button(test_vid_frame, text="Test", command=self._test_video_id_regex).pack(side=tk.LEFT, padx=(0, 5))
+        self.video_id_result_label = ttk.Label(test_vid_frame, text="", font=("Arial", 9))
+        self.video_id_result_label.pack(side=tk.LEFT)
+
+    def _test_video_id_regex(self):
+        """Test the video ID regex pattern against the test filename."""
+        pattern = self.form_vars['video_id_regex'].get().strip()
+        filename = self.test_filename_var.get().strip()
+
+        if not pattern:
+            self.video_id_result_label.config(text="No pattern", foreground="red")
+            return
+
+        if not filename:
+            self.video_id_result_label.config(text="No filename", foreground="red")
+            return
+
+        try:
+            name = os.path.splitext(os.path.basename(filename))[0]
+            video_id = re.sub(pattern, '', name)
+            if not video_id:
+                video_id = name
+            self.video_id_result_label.config(
+                text=f"-> {video_id}",
+                foreground="green"
+            )
+        except re.error as e:
+            self.video_id_result_label.config(
+                text=f"Invalid regex: {e}",
+                foreground="red"
+            )
+
     def _test_labrecorder_connection(self):
         """Test connection to LabRecorder RCS."""
         host = self.form_vars['labrecorder_host'].get().strip()
@@ -324,6 +387,16 @@ class ExperimentSettingsDialog(FormDialog):
             if not stream_name:
                 errors.append("LSL stream name is required when LSL is enabled")
 
+        # Validate video_id_regex
+        video_id_regex = self.form_vars.get('video_id_regex')
+        if video_id_regex:
+            pattern = video_id_regex.get().strip()
+            if pattern:
+                try:
+                    re.compile(pattern)
+                except re.error as e:
+                    errors.append(f"Invalid video ID regex pattern: {e}")
+
         # Validate LabRecorder settings
         if self.form_vars['labrecorder_enabled'].get():
             host = self.form_vars['labrecorder_host'].get().strip()
@@ -355,6 +428,11 @@ class ExperimentSettingsDialog(FormDialog):
         except (ValueError, KeyError):
             pass
 
+        # Get video_id_regex (use default if empty)
+        video_id_regex = form_values.get('video_id_regex', r'^[A-Za-z]+').strip()
+        if not video_id_regex:
+            video_id_regex = r'^[A-Za-z]+'
+
         return {
             'name': form_values['name'].strip(),
             'description': form_values['description'].strip(),
@@ -363,5 +441,6 @@ class ExperimentSettingsDialog(FormDialog):
             'lsl_stream_name': form_values['lsl_stream_name'].strip(),
             'labrecorder_enabled': form_values['labrecorder_enabled'],
             'labrecorder_host': form_values['labrecorder_host'].strip(),
-            'labrecorder_port': labrecorder_port
+            'labrecorder_port': labrecorder_port,
+            'video_id_regex': video_id_regex
         }

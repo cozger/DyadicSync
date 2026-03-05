@@ -19,12 +19,18 @@ class RandomizationConfig:
         self.seed: Optional[int] = None  # Random seed for reproducibility
         self.constraints: List = []  # Ordering constraints
 
+        # Viewer randomization settings (for turn-taking conditions)
+        self.viewer_randomization_enabled: bool = True  # Auto-assign viewers for turn_taking trials
+        self.viewer_seed: Optional[int] = None  # Separate seed for viewer assignment
+
     def to_dict(self) -> Dict[str, Any]:
         """Serialize to dictionary."""
         return {
             'method': self.method,
             'seed': self.seed,
-            'constraints': [c.to_dict() for c in self.constraints]
+            'constraints': [c.to_dict() for c in self.constraints],
+            'viewer_randomization_enabled': self.viewer_randomization_enabled,
+            'viewer_seed': self.viewer_seed
         }
 
     @classmethod
@@ -38,6 +44,10 @@ class RandomizationConfig:
         constraint_data = data.get('constraints', [])
         config.constraints = [Constraint.from_dict(c) for c in constraint_data]
 
+        # Viewer randomization settings
+        config.viewer_randomization_enabled = data.get('viewer_randomization_enabled', True)
+        config.viewer_seed = data.get('viewer_seed')
+
         return config
 
 
@@ -49,12 +59,21 @@ class Block:
     - Baseline block: Single trial, FixationPhase(240s)
     - Video block: 20 trials, each following Fixation→Video→Rating procedure
     - Instruction block: Single trial, InstructionPhase
+    - Variant block: Used within BranchBlock as an alternative
 
     Components:
     - Procedure: Template defining phase sequence
     - Trial List: Data source (CSV or manual)
     - Randomization: How to order trials
+
+    Block Types:
+    - 'trial_based': Execute procedure once per trial from trial list
+    - 'simple': Execute procedure once (no trial list needed)
+    - 'variant': Used within BranchBlock (has procedure, optional trial list)
     """
+
+    # Valid block types
+    BLOCK_TYPES = ['trial_based', 'simple', 'variant']
 
     def __init__(self, name: str, block_type: str = 'trial_based'):
         """
@@ -62,7 +81,7 @@ class Block:
 
         Args:
             name: Human-readable block name (e.g., "Emotional Videos")
-            block_type: 'trial_based' or 'simple' (no trials, just procedure)
+            block_type: 'trial_based', 'simple', or 'variant'
         """
         self.name = name
         self.block_type = block_type
@@ -71,6 +90,9 @@ class Block:
         self.procedure: Optional[Procedure] = None
         self.trial_list = None  # Will be TrialList instance
         self.randomization: RandomizationConfig = RandomizationConfig()
+
+        # Weight for branch block selection (default 1.0)
+        self.weight: float = 1.0
 
         # Runtime state
         self.current_trial_index: int = 0
@@ -215,11 +237,12 @@ class Block:
         """
         Calculate accurate block duration by reading video metadata from CSV files.
 
-        This method:
-        1. Resolves template variables ({video1}, etc.) using actual trial data
-        2. Probes video files with FFprobe to get real durations
-        3. Sums fixed-duration phases (fixations, videos)
-        4. Ignores variable-duration phases (ratings, instructions)
+        This method uses two-tier caching:
+        1. _cached_video_duration_total: Sum of video durations (survives phase changes)
+        2. _cached_duration: Final total (cleared when phases or CSV change)
+
+        When phases change, only fixation durations need recalculating - video
+        probing is skipped if video cache exists.
 
         Returns:
             Total duration in seconds, or None if unable to calculate
@@ -227,7 +250,8 @@ class Block:
         Notes:
             - Only works for trial-based blocks with CSV trial lists
             - For simple blocks, uses get_estimated_duration() instead
-            - Results are cached; call invalidate_duration_cache() to refresh
+            - Call invalidate_duration_cache() when phases change
+            - Call invalidate_video_cache() when CSV changes
         """
         print(f"\n[DURATION_CALC] ═══ Starting calculation for block '{self.name}' ═══")
 
@@ -249,9 +273,21 @@ class Block:
             return None
 
         try:
+            # Check if we have cached video durations (skip re-probing)
+            if hasattr(self, '_cached_video_duration_total') and self._cached_video_duration_total is not None:
+                print(f"[DURATION_CALC] Using cached video duration: {self._cached_video_duration_total:.1f}s")
+                fixed_total = self._calculate_fixed_phases_total()
+                total_duration = self._cached_video_duration_total + fixed_total
+                self._cached_duration = total_duration
+                print(f"[DURATION_CALC] ✓ Total: {total_duration:.1f}s ({total_duration/60:.1f} min) [video cached, phases recalculated]")
+                return total_duration
+
+            # Full calculation with video probing
             from .phases.fixation_phase import FixationPhase
             from .phases.video_phase import VideoPhase
-            from utilities.video_duration import get_max_video_duration
+            from .phases.rating_phase import RatingPhase
+            from .phases.instruction_phase import InstructionPhase
+            from utilities.video_duration import probe_videos_parallel
 
             # Get trials (possibly randomized)
             trials = self.trial_list.get_trials(self.randomization)
@@ -261,55 +297,54 @@ class Block:
                 return None
 
             print(f"[DURATION_CALC] Processing {len(trials)} trials...")
-            total_duration = 0.0
-            trial_count = 0
 
-            # Calculate duration for each trial
+            # Debug: show what phases exist in procedure
+            print(f"[DURATION_CALC] Phases in procedure: {[type(p).__name__ for p in self.procedure.phases]}")
+
+            # Single pass: collect video paths AND all fixed-duration phases
+            all_video_paths = []
+            fixed_phases_total = 0.0
+
             for trial in trials:
-                trial_count += 1
-                trial_duration = 0.0
-                print(f"\n[DURATION_CALC] --- Trial {trial_count}/{len(trials)} ---")
-
-                # Render procedure with trial data to resolve templates
                 trial_data = trial.data.copy()
-
-                # For each phase in procedure
                 for phase in self.procedure.phases:
-                    # Render phase to resolve template variables
-                    rendered_phase = phase.render(trial_data) if trial_data else phase
+                    # FixationPhase (and BaselinePhase which inherits from it)
+                    if isinstance(phase, FixationPhase):
+                        fixed_phases_total += phase.duration
 
-                    # FixationPhase: Use configured duration
-                    if isinstance(rendered_phase, FixationPhase):
-                        print(f"[DURATION_CALC]   Fixation: {rendered_phase.duration:.1f}s")
-                        total_duration += rendered_phase.duration
-                        trial_duration += rendered_phase.duration
+                    # VideoPhase - collect paths for probing
+                    elif isinstance(phase, VideoPhase):
+                        rendered = phase.render(trial_data)
+                        all_video_paths.append((rendered.participant_1_video, rendered.participant_2_video))
 
-                    # VideoPhase: Probe video files for actual duration
-                    elif isinstance(rendered_phase, VideoPhase):
-                        print(f"[DURATION_CALC]   VideoPhase - probing files...")
-                        video_duration = get_max_video_duration(
-                            rendered_phase.participant_1_video,
-                            rendered_phase.participant_2_video
-                        )
-                        if video_duration is not None:
-                            total_duration += video_duration
-                            trial_duration += video_duration
-                            print(f"[DURATION_CALC]   Added {video_duration:.2f}s to trial duration")
-                        else:
-                            print(f"[DURATION_CALC]   ⚠ Unable to read video duration (skipping)")
-                        # If unable to read video, skip (don't break entire calculation)
+                    # RatingPhase - use timeout if set
+                    elif isinstance(phase, RatingPhase):
+                        if hasattr(phase, 'timeout') and phase.timeout is not None:
+                            fixed_phases_total += phase.timeout
 
-                    # RatingPhase, InstructionPhase: Ignore (variable duration)
-                    # User specified to ignore these in requirements
-                    else:
-                        phase_name = type(rendered_phase).__name__
-                        print(f"[DURATION_CALC]   {phase_name}: Variable duration (ignored)")
+                    # InstructionPhase - use duration if set
+                    elif isinstance(phase, InstructionPhase):
+                        if hasattr(phase, 'duration') and phase.duration is not None:
+                            fixed_phases_total += phase.duration
 
-                print(f"[DURATION_CALC] Trial {trial_count} total: {trial_duration:.2f}s")
+            print(f"[DURATION_CALC] Fixed phases total: {fixed_phases_total:.1f}s ({fixed_phases_total/len(trials):.1f}s per trial)")
 
-            # Cache result
+            # Parallel probe all unique videos
+            unique_videos = list(set(v for pair in all_video_paths for v in pair))
+            durations = probe_videos_parallel(unique_videos)
+
+            # Sum video durations (max of each pair)
+            video_total = sum(
+                max(durations.get(p1) or 0, durations.get(p2) or 0)
+                for p1, p2 in all_video_paths
+            )
+
+            # Cache video duration separately (survives phase changes)
+            self._cached_video_duration_total = video_total
+
+            total_duration = fixed_phases_total + video_total
             self._cached_duration = total_duration
-            print(f"\n[DURATION_CALC] ═══ TOTAL DURATION: {total_duration:.2f}s ({total_duration/60:.1f} min) ═══\n")
+            print(f"[DURATION_CALC] ✓ Total: {total_duration:.1f}s ({total_duration/60:.1f} min) - {len(trials)} trials, {len(unique_videos)} unique videos")
             return total_duration
 
         except Exception as e:
@@ -321,17 +356,67 @@ class Block:
             logging.warning(f"Failed to calculate accurate duration for block '{self.name}': {e}")
             return None
 
+    def _calculate_fixed_phases_total(self) -> float:
+        """
+        Calculate total duration of all fixed-duration phases without re-probing videos.
+
+        Includes:
+        - FixationPhase.duration
+        - BaselinePhase.duration (inherits from FixationPhase)
+        - RatingPhase.timeout (if set)
+        - InstructionPhase.duration (if set)
+
+        Returns:
+            Total fixed-phase duration across all trials in seconds
+        """
+        from .phases.fixation_phase import FixationPhase
+        from .phases.rating_phase import RatingPhase
+        from .phases.instruction_phase import InstructionPhase
+
+        if not self.procedure or not self.trial_list:
+            return 0.0
+
+        trial_count = len(self.trial_list.trials)
+
+        # Sum all fixed-duration phases per trial
+        fixed_per_trial = 0.0
+        for phase in self.procedure.phases:
+            if isinstance(phase, FixationPhase):
+                # Includes BaselinePhase (inherits from FixationPhase)
+                fixed_per_trial += phase.duration
+            elif isinstance(phase, RatingPhase):
+                if hasattr(phase, 'timeout') and phase.timeout is not None:
+                    fixed_per_trial += phase.timeout
+            elif isinstance(phase, InstructionPhase):
+                if hasattr(phase, 'duration') and phase.duration is not None:
+                    fixed_per_trial += phase.duration
+
+        return fixed_per_trial * trial_count
+
     def invalidate_duration_cache(self):
         """
-        Invalidate cached duration calculation.
+        Invalidate cached duration calculation (keeps video cache).
 
-        Call this when:
-        - CSV trial list changes
-        - Procedure phases are modified
-        - Video files are updated
+        Call this when procedure phases are modified (add/remove/reorder).
+        Video durations are preserved - only fixation totals are recalculated.
         """
         if hasattr(self, '_cached_duration'):
             self._cached_duration = None
+        # NOTE: Don't clear _cached_video_duration_total here!
+        # Video cache survives phase changes.
+
+    def invalidate_video_cache(self):
+        """
+        Invalidate video duration cache (full re-probe needed).
+
+        Call this when:
+        - CSV trial list changes
+        - Video files are updated
+        - User clicks "Recalculate" button
+        """
+        if hasattr(self, '_cached_video_duration_total'):
+            self._cached_video_duration_total = None
+        self.invalidate_duration_cache()
 
     def to_dict(self) -> Dict[str, Any]:
         """
@@ -340,13 +425,19 @@ class Block:
         Returns:
             Dictionary representation
         """
-        return {
+        result = {
             'name': self.name,
             'type': self.block_type,
             'procedure': self.procedure.to_dict() if self.procedure else None,
             'trial_list': self.trial_list.to_dict() if self.trial_list else None,
             'randomization': self.randomization.to_dict()
         }
+
+        # Only include weight if it's not the default (1.0)
+        if self.weight != 1.0:
+            result['weight'] = self.weight
+
+        return result
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'Block':
@@ -376,5 +467,8 @@ class Block:
 
         if data.get('randomization'):
             block.randomization = RandomizationConfig.from_dict(data['randomization'])
+
+        # Load weight (for variant blocks in branch blocks)
+        block.weight = data.get('weight', 1.0)
 
         return block

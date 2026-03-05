@@ -130,6 +130,10 @@ def resolve_marker_template(
 
     # STRING TEMPLATE: {variable} substitution
     if has_curly_braces:
+        # Make response_value available as {response_value} in string templates
+        if response_value is not None:
+            trial_data = {**trial_data, 'response_value': response_value}
+
         # Extract all {variable} placeholders
         variables_needed = re.findall(r'\{(\w+)\}', template)
 

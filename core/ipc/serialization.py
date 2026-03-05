@@ -21,7 +21,8 @@ class ExperimentConfig:
                  headset: str, output_dir: str,
                  labrecorder_enabled: bool = False,
                  labrecorder_host: str = 'localhost',
-                 labrecorder_port: int = 22345):
+                 labrecorder_port: int = 22345,
+                 windowed_mode: bool = False):
         """
         Initialize experiment configuration.
 
@@ -34,6 +35,7 @@ class ExperimentConfig:
             labrecorder_enabled: Enable LabRecorder auto-start
             labrecorder_host: LabRecorder RCS host
             labrecorder_port: LabRecorder RCS port
+            windowed_mode: Run in windowed debug mode instead of fullscreen
         """
         self.timeline = timeline
         self.subject_id = subject_id
@@ -43,6 +45,7 @@ class ExperimentConfig:
         self.labrecorder_enabled = labrecorder_enabled
         self.labrecorder_host = labrecorder_host
         self.labrecorder_port = labrecorder_port
+        self.windowed_mode = windowed_mode
 
     def to_dict(self) -> Dict[str, Any]:
         """
@@ -62,7 +65,8 @@ class ExperimentConfig:
             'output_dir': self.output_dir,
             'labrecorder_enabled': self.labrecorder_enabled,
             'labrecorder_host': self.labrecorder_host,
-            'labrecorder_port': self.labrecorder_port
+            'labrecorder_port': self.labrecorder_port,
+            'windowed_mode': self.windowed_mode
         }
 
     @classmethod
@@ -88,7 +92,8 @@ class ExperimentConfig:
             output_dir=data['output_dir'],
             labrecorder_enabled=data.get('labrecorder_enabled', False),
             labrecorder_host=data.get('labrecorder_host', 'localhost'),
-            labrecorder_port=data.get('labrecorder_port', 22345)
+            labrecorder_port=data.get('labrecorder_port', 22345),
+            windowed_mode=data.get('windowed_mode', False)
         )
 
     def __repr__(self):

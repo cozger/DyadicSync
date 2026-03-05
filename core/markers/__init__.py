@@ -11,6 +11,7 @@ This module provides infrastructure for managing LSL event markers with:
 from .catalog import MarkerDefinition, MarkerCatalog
 from .templates import resolve_marker_template, MarkerBinding
 from .logger import MarkerLogger, MarkerEvent
+from .router import MarkerRouter
 
 __all__ = [
     'MarkerDefinition',
@@ -19,4 +20,5 @@ __all__ = [
     'resolve_marker_template',
     'MarkerLogger',
     'MarkerEvent',
+    'MarkerRouter',
 ]

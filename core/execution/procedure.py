@@ -173,52 +173,47 @@ class Procedure:
         # Extract trial_id from trial_data
         trial_id = trial_data.get('trial_id', trial_index) if trial_data else trial_index
 
+        # Derive role info from variant name (set by BranchBlock during execution)
+        variant_name = trial_data.get('_variant_name', '') if trial_data else ''
+        variant_lower = variant_name.lower()
+
+        if 'p1' in variant_lower and 'viewer' in variant_lower:
+            role_p1, role_p2, variant_type = 'viewer', 'observer', 'separate'
+        elif 'p2' in variant_lower and 'viewer' in variant_lower:
+            role_p1, role_p2, variant_type = 'observer', 'viewer', 'separate'
+        else:
+            role_p1, role_p2, variant_type = 'joint', 'joint', 'joint'
+
         # Save P1 response
         if rating_results.get('p1_response') is not None:
-            # Prepare additional data for the response record
-            extra_data = {}
-            if trial_data:
-                # Include video paths and other trial metadata
-                extra_data.update({
-                    'video1': trial_data.get('VideoPath1', trial_data.get('video1', '')),
-                    'video2': trial_data.get('VideoPath2', trial_data.get('video2', '')),
-                    'trial_index': trial_index
-                })
-                # Include any other columns from trial_data
-                for key, value in trial_data.items():
-                    if key not in extra_data and key not in ['trial_id', 'trial_index']:
-                        extra_data[key] = value
-
             data_collector.add_participant_response(
                 participant='P1',
                 trial_id=trial_id,
                 response=rating_results['p1_response'],
                 rt=rating_results.get('p1_rt', 0.0),
-                **extra_data
+                VideoPath=trial_data.get('VideoPath', '') if trial_data else '',
+                affect=trial_data.get('affect', '') if trial_data else '',
+                role_p1=role_p1,
+                role_p2=role_p2,
+                variant_type=variant_type,
+                trial_index=trial_index,
+                variant_name=variant_name
             )
 
         # Save P2 response
         if rating_results.get('p2_response') is not None:
-            # Prepare additional data for the response record
-            extra_data = {}
-            if trial_data:
-                # Include video paths and other trial metadata
-                extra_data.update({
-                    'video1': trial_data.get('VideoPath1', trial_data.get('video1', '')),
-                    'video2': trial_data.get('VideoPath2', trial_data.get('video2', '')),
-                    'trial_index': trial_index
-                })
-                # Include any other columns from trial_data
-                for key, value in trial_data.items():
-                    if key not in extra_data and key not in ['trial_id', 'trial_index']:
-                        extra_data[key] = value
-
             data_collector.add_participant_response(
                 participant='P2',
                 trial_id=trial_id,
                 response=rating_results['p2_response'],
                 rt=rating_results.get('p2_rt', 0.0),
-                **extra_data
+                VideoPath=trial_data.get('VideoPath', '') if trial_data else '',
+                affect=trial_data.get('affect', '') if trial_data else '',
+                role_p1=role_p1,
+                role_p2=role_p2,
+                variant_type=variant_type,
+                trial_index=trial_index,
+                variant_name=variant_name
             )
 
     def validate(self) -> List[str]:

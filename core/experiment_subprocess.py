@@ -61,6 +61,9 @@ def run_experiment_subprocess(
         experiment.set_subject_info(config.subject_id, config.session)
         experiment.set_headset_selection(config.headset)
 
+        # Set windowed debug mode if requested
+        experiment.device_manager.windowed_mode = config.windowed_mode
+
         # Override data collector output directory
         if config.output_dir:
             experiment.data_collector.output_directory = config.output_dir

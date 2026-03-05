@@ -4,9 +4,10 @@ Timeline class for DyadicSync Framework.
 Manages the sequence of blocks in an experiment.
 """
 
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Union
 import os
 from .block import Block
+from .branch_block import BranchBlock
 
 
 class Timeline:
@@ -14,6 +15,7 @@ class Timeline:
     Manages the sequence of blocks in an experiment.
 
     A timeline is an ordered list of blocks that execute sequentially.
+    Supports both regular Blocks and BranchBlocks (for conditional variants).
     Supports reordering, insertion, deletion via GUI.
     """
 
@@ -24,7 +26,7 @@ class Timeline:
         Args:
             name: Experiment name
         """
-        self.blocks: List[Block] = []
+        self.blocks: List[Union[Block, BranchBlock]] = []
 
         # Experiment-level metadata
         self.metadata: Dict[str, Any] = {
@@ -44,9 +46,11 @@ class Timeline:
             # LSL configuration
             'lsl_stream_name': 'ExpEvent_Markers',  # LSL stream name
             'lsl_enabled': True,  # Whether to send LSL markers
+            # Video ID extraction
+            'video_id_regex': r'^[A-Za-z]+',  # Regex pattern to strip from filename for video ID
         }
 
-    def add_block(self, block: Block, index: Optional[int] = None):
+    def add_block(self, block: Union[Block, BranchBlock], index: Optional[int] = None):
         """
         Add a block to the timeline.
 
@@ -161,9 +165,17 @@ class Timeline:
         # Update metadata with all fields
         timeline.metadata.update(metadata)
 
-        # Load blocks
+        # Load blocks (supporting both Block and BranchBlock)
         for block_data in data.get('blocks', []):
-            block = Block.from_dict(block_data)
+            block_type = block_data.get('type', 'trial_based')
+
+            if block_type == 'branch':
+                # Load as BranchBlock
+                block = BranchBlock.from_dict(block_data)
+            else:
+                # Load as regular Block
+                block = Block.from_dict(block_data)
+
             timeline.add_block(block)
 
         return timeline

@@ -28,7 +28,6 @@ import time
 import threading
 import logging
 import pyglet
-import sounddevice as sd
 from typing import List, Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -134,6 +133,15 @@ class SyncEngine:
             # Verify and log sync quality
             sync_result = SyncEngine._verify_sync(actual_starts, target_timestamp)
 
+            # Collect and log audio-video delay for each player
+            for i, player in enumerate(players):
+                if hasattr(player, 'get_audio_video_delay'):
+                    av_delay = player.get_audio_video_delay()
+                    if av_delay:
+                        print(f"[SyncEngine] Player {i} Audio-Video Delay: "
+                              f"{av_delay['delay_ms']:+.1f}ms "
+                              f"(configured lead: {av_delay['audio_lead_ms']:.0f}ms)")
+
             # Log async verification complete
             logger.info(f"SyncEngine: Async verification complete (scheduled +{delay_ms:.0f}ms after trigger)")
 
@@ -210,14 +218,18 @@ class SyncEngine:
 
         logger.info(f"SyncEngine: Scheduling unified callback with delay {delay*1000:.1f}ms")
 
-        # Create unified callback that starts all players simultaneously
+        # Create unified callback that starts VIDEO only
+        # AUDIO-VIDEO SYNC FIX v3: Audio threads use timestamp-based lead time
+        # Audio busy-waits to (video_timestamp - 5ms), giving it a head start to
+        # compensate for sd.play() init + PortAudio buffer fill latency.
+        # By the time this callback fires, audio should already be starting/playing.
         def unified_playback_callback(dt):
-            """Single callback that starts all players together (eliminates sequential drift)."""
+            """Single callback that starts video. Audio handles its own timing."""
             # Capture timestamp once for all players (true sync point)
             actual_time = time.perf_counter()
 
-            # Start all players' video playback with minimal gap
-            # Direct access to minimize overhead between player.play() calls
+            # Start all players' VIDEO playback
+            # Audio is already starting/playing via its own timestamp-based timing
             for player in players:
                 if player.player:
                     player.player.play()
@@ -238,19 +250,6 @@ class SyncEngine:
             unified_playback_callback(0)
         else:
             pyglet.clock.schedule_once(unified_playback_callback, delay)
-
-        # Start audio threads separately (sounddevice is thread-safe)
-        # Audio sync is independent of video callback timing
-        for i, player in enumerate(players):
-            def audio_thread_func(p=player):
-                """Audio thread: wait until target timestamp, then play."""
-                SyncEngine.wait_until_timestamp(target_timestamp)
-                if p.audio_data is not None and p.samplerate is not None:
-                    sd.play(p.audio_data, p.samplerate, device=p.audio_device_index)
-                    print(f"[SyncPlayer] Audio started on device {p.audio_device_index}")
-
-            audio_thread = threading.Thread(target=audio_thread_func, daemon=True)
-            audio_thread.start()
 
         # CRITICAL FIX: Do NOT block waiting for playback to start!
         # Blocking the main thread prevents Pyglet's event loop from executing

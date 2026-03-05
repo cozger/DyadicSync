@@ -2,10 +2,17 @@
   "version": "2.0",
   "markers": [
     {
-      "name": "Trial Start",
-      "description": "Trial begin (all trials start simultaneously)",
-      "template_pattern": "100#",
-      "code": 1000,
+      "name": "Turn-Taking Trial Start (P1 Viewer)",
+      "description": "Turn-taking trial start with P1 as viewer",
+      "template_pattern": "110#",
+      "code": 1100,
+      "marker_type": "integer"
+    },
+    {
+      "name": "Turn-Taking Trial Start (P2 Viewer)",
+      "description": "Turn-taking trial start with P2 as viewer",
+      "template_pattern": "120#",
+      "code": 1200,
       "marker_type": "integer"
     },
     {
@@ -44,6 +51,20 @@
       "marker_type": "integer"
     },
     {
+      "name": "P1 Viewer Self-Report",
+      "description": "P1 rating when P1 was the viewer (self-report)",
+      "template_pattern": "310#0$",
+      "code": 31000,
+      "marker_type": "integer"
+    },
+    {
+      "name": "P1 Observer Rating",
+      "description": "P1 rating when P1 was the observer (empathic inference)",
+      "template_pattern": "410#0$",
+      "code": 41000,
+      "marker_type": "integer"
+    },
+    {
       "name": "P2 Rating",
       "description": "Rating response for participant 2 (trial + rating)",
       "template_pattern": "500#0$",
@@ -51,9 +72,86 @@
       "marker_type": "integer"
     },
     {
+      "name": "P2 Viewer Self-Report",
+      "description": "P2 rating when P2 was the viewer (self-report)",
+      "template_pattern": "520#0$",
+      "code": 52000,
+      "marker_type": "integer"
+    },
+    {
+      "name": "P2 Observer Rating",
+      "description": "P2 rating when P2 was the observer (empathic inference)",
+      "template_pattern": "620#0$",
+      "code": 62000,
+      "marker_type": "integer"
+    },
+    {
+      "name": "Condition x Affect Pair",
+      "description": "Condition and affect pairing marker for generating ERPs for 3 x 4 design",
+      "template_pattern": "{condition}_{video1_affect}x{video1_affect}",
+      "code": null,
+      "marker_type": "string"
+    },
+    {
+      "name": "P1 rating-ICONS",
+      "description": null,
+      "template_pattern": "{video_id}_{role_p1}_{affect}_R_{response_value}",
+      "code": null,
+      "marker_type": "string"
+    },
+    {
+      "name": "P1 video end-ICONS",
+      "description": null,
+      "template_pattern": "{video_id}_{role_p1}_{affect}_end",
+      "code": null,
+      "marker_type": "string"
+    },
+    {
+      "name": "P1 video start-ICONS",
+      "description": null,
+      "template_pattern": "{video_id}_{role_p1}_{affect}_start",
+      "code": null,
+      "marker_type": "string"
+    },
+    {
+      "name": "P2 rating-ICONS",
+      "description": null,
+      "template_pattern": "{video_id}_{role_p2}_{affect}_R_{response_value}",
+      "code": null,
+      "marker_type": "string"
+    },
+    {
+      "name": "P2 video end-ICONS",
+      "description": null,
+      "template_pattern": "{video_id}_{role_p2}_{affect}_end",
+      "code": null,
+      "marker_type": "string"
+    },
+    {
+      "name": "P2 video start-ICONS",
+      "description": null,
+      "template_pattern": "{video_id}_{role_p2}_{affect}_start",
+      "code": null,
+      "marker_type": "string"
+    },
+    {
       "name": "Trial Start (by type)",
       "description": "Trial start with emotion type",
       "template_pattern": "trial_{trial_index}_{type}",
+      "code": null,
+      "marker_type": "string"
+    },
+    {
+      "name": "Turn-Taking Rating (string)",
+      "description": "Turn-taking rating with role info as string marker",
+      "template_pattern": "{role}_rating_{rating}_trial_{trial_index}",
+      "code": null,
+      "marker_type": "string"
+    },
+    {
+      "name": "Turn-Taking Start (string)",
+      "description": "Turn-taking trial start with viewer info as string marker",
+      "template_pattern": "turn_taking_{viewer}_viewer_trial_{trial_index}",
       "code": null,
       "marker_type": "string"
     },

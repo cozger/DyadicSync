@@ -14,7 +14,6 @@ import sounddevice as sd
 import soundfile as sf
 import ffmpeg
 import pyglet
-from playback.sync_engine import SyncEngine
 from config.ffmpeg_config import get_ffmpeg_cmd
 
 
@@ -51,8 +50,17 @@ class SynchronizedPlayer:
         self.armed_timestamp: Optional[float] = None
 
         # Track actual start time for sync verification
-        self.actual_start_time: Optional[float] = None
+        self.actual_start_time: Optional[float] = None  # Video start time
         self.target_start_time: Optional[float] = None
+
+        # Audio-video sync measurement
+        self.actual_audio_start_time: Optional[float] = None  # When sd.play() was called
+        self.target_audio_start_time: Optional[float] = None  # Target audio timestamp (with lead)
+
+        # Audio thread for timestamp-based sync (tight audio-video sync)
+        # Thread is created during arm_sync_timestamp() and busy-waits to
+        # audio timestamp (slightly before video) to compensate for audio latency
+        self._audio_thread: Optional[threading.Thread] = None
 
     def prepare(self):
         """
@@ -101,6 +109,12 @@ class SynchronizedPlayer:
                 # Load audio data directly from memory buffer (no disk I/O)
                 audio_buffer = io.BytesIO(stdout)
                 self.audio_data, self.samplerate = sf.read(audio_buffer, dtype='float32')
+
+                # Log audio extraction details for debugging
+                audio_channels = self.audio_data.shape[1] if len(self.audio_data.shape) > 1 else 1
+                audio_duration = len(self.audio_data) / self.samplerate
+                print(f"[SyncPlayer] Audio extracted: {self.samplerate}Hz, {audio_channels} channel(s), "
+                      f"duration={audio_duration:.2f}s, device={self.audio_device_index}")
 
             except ffmpeg.Error as e:
                 # FFmpeg-specific error - show stderr details
@@ -155,6 +169,12 @@ class SynchronizedPlayer:
             self.player = pyglet.media.Player()
             self.player.queue(source)
             self.player.volume = 0  # Mute video, audio plays separately
+
+            # === DECODER WARM-UP: Prevent first-frame motion artifacts ===
+            # seek(0) forces decoder to find first keyframe and fully initialize
+            # reference buffers before playback starts.
+            if source.video_format:
+                self.player.seek(0)
 
             # Test duration access
             test_duration = source.duration
@@ -228,17 +248,17 @@ class SynchronizedPlayer:
         """
         Schedule video and audio playback at a precise timestamp using Pyglet clock.
 
-        This method schedules video playback on the main thread via pyglet.clock
-        and starts audio in a background thread. This ensures OpenGL operations
-        (video playback) happen on the main thread while maintaining precise
-        timestamp-based synchronization.
+        This method schedules a combined callback on the main thread via pyglet.clock
+        that starts both video and audio together. This ensures OpenGL operations
+        (video playback) happen on the main thread while audio starts from the same
+        trigger point, eliminating timing race conditions.
 
         Args:
             sync_timestamp: Target timestamp (from time.perf_counter()) to start playback
 
         Note:
-            - Video playback scheduled via pyglet.clock (main thread)
-            - Audio playback started in background thread (thread-safe)
+            - Combined video+audio callback scheduled via pyglet.clock (main thread)
+            - Audio thread spawned from callback (starts immediately, no independent wait)
             - Actual start time recorded in self.actual_start_time
         """
         try:
@@ -249,35 +269,62 @@ class SynchronizedPlayer:
             now = time.perf_counter()
             delay = sync_timestamp - now
 
+            # AUDIO-VIDEO SYNC FIX: Combined callback that starts both video and audio
+            # This ensures they share the same trigger point (no race condition)
+            def combined_play_callback(dt):
+                """Combined callback that starts video and audio together."""
+                try:
+                    # Start video playback on main thread (OpenGL context is active)
+                    if self.player:
+                        self.player.play()
+
+                    # Record actual start time
+                    self.actual_start_time = time.perf_counter()
+
+                    # Calculate drift
+                    if self.target_start_time:
+                        drift_ms = (self.actual_start_time - self.target_start_time) * 1000
+                        print(f"[SyncPlayer] Video started at {self.actual_start_time:.6f} "
+                              f"(target: {self.target_start_time:.6f}, "
+                              f"drift: {drift_ms:+.3f}ms)")
+                    else:
+                        print(f"[SyncPlayer] Video started at {self.actual_start_time:.6f}")
+
+                    # AUDIO-VIDEO SYNC FIX: Start audio immediately after video (same callback)
+                    # No independent waiting - audio starts from the same trigger point
+                    if self.audio_data is not None and self.samplerate is not None:
+                        def audio_play_func():
+                            """Audio thread: start playback immediately and block until complete."""
+                            sd.play(self.audio_data, self.samplerate, device=self.audio_device_index)
+                            print(f"[SyncPlayer] Audio started on device {self.audio_device_index}")
+
+                            # CRITICAL: Block until audio completes before thread exits
+                            sd.wait()
+                            print(f"[SyncPlayer] Audio finished on device {self.audio_device_index}")
+
+                        # Launch audio thread (non-daemon for proper cleanup)
+                        audio_thread = threading.Thread(target=audio_play_func, daemon=False)
+                        audio_thread.start()
+
+                        # Store thread reference for cleanup in stop()
+                        if not hasattr(self, '_audio_threads'):
+                            self._audio_threads = []
+                        self._audio_threads.append(audio_thread)
+
+                except Exception as e:
+                    print(f"[SyncPlayer] Error in combined play callback: {e}")
+                    self.actual_start_time = time.perf_counter()
+
             if delay <= 0:
                 # Target timestamp is in the past - execute immediately
-                # This shouldn't happen with STAGE 2 player creation, but provides safety
                 print(f"[SyncPlayer] WARNING: Target {sync_timestamp:.6f} is {abs(delay)*1000:.1f}ms "
                       f"in the past, executing immediately")
-                self._video_play_callback(0)  # Direct execution, no pyglet queue
+                combined_play_callback(0)  # Direct execution, no pyglet queue
             else:
                 # Normal case: target is in the future - schedule via Pyglet clock
                 print(f"[SyncPlayer] Scheduling playback in {delay*1000:.1f}ms "
                       f"(target: {sync_timestamp:.6f})")
-
-                # Schedule video playback on main thread via Pyglet clock
-                # The callback will be executed by Pyglet's event loop on the main thread
-                pyglet.clock.schedule_once(self._video_play_callback, delay)
-
-            # Start audio in background thread at the same timestamp
-            # sounddevice is thread-safe, so this is OK
-            def audio_thread_func():
-                # Wait until sync timestamp
-                SyncEngine.wait_until_timestamp(sync_timestamp)
-
-                # Start audio
-                if self.audio_data is not None and self.samplerate is not None:
-                    sd.play(self.audio_data, self.samplerate, device=self.audio_device_index)
-                    print(f"[SyncPlayer] Audio started on device {self.audio_device_index}")
-
-            # Launch audio thread
-            audio_thread = threading.Thread(target=audio_thread_func, daemon=True)
-            audio_thread.start()
+                pyglet.clock.schedule_once(combined_play_callback, delay)
 
         except Exception as e:
             print(f"[SyncPlayer] Error in schedule_play_at_timestamp: {e}")
@@ -292,6 +339,36 @@ class SynchronizedPlayer:
         """
         return self.actual_start_time
 
+    def get_audio_video_delay(self) -> Optional[dict]:
+        """
+        Get the measured audio-video delay after playback started.
+
+        Returns:
+            Dictionary with timing metrics, or None if not yet available:
+            {
+                'audio_start': float,      # Actual audio start timestamp
+                'video_start': float,      # Actual video start timestamp
+                'delay_ms': float,         # Audio-to-video delay (positive = audio first)
+                'audio_lead_ms': float,    # Configured audio lead time
+                'effective_lead_ms': float # Actual measured lead (what we achieved)
+            }
+        """
+        if self.actual_audio_start_time is None or self.actual_start_time is None:
+            return None
+
+        # Delay = video_start - audio_start
+        # Positive = audio started first (desired)
+        # Negative = video started first (audio behind)
+        delay_ms = (self.actual_start_time - self.actual_audio_start_time) * 1000
+
+        return {
+            'audio_start': self.actual_audio_start_time,
+            'video_start': self.actual_start_time,
+            'delay_ms': delay_ms,
+            'audio_lead_ms': self.DEFAULT_AUDIO_LEAD_MS,
+            'effective_lead_ms': delay_ms  # What we actually achieved
+        }
+
     def schedule_play_at_delay(self, target_timestamp: float, delay: float):
         """
         Schedule playback with pre-calculated delay (eliminates sequential drift).
@@ -305,37 +382,70 @@ class SynchronizedPlayer:
             delay: Pre-calculated delay in seconds (target_timestamp - now)
 
         Note:
-            - Video scheduled via pyglet.clock with provided delay
-            - Audio syncs to target_timestamp (not affected by delay parameter)
+            - Combined video+audio callback scheduled via pyglet.clock with provided delay
+            - Audio thread spawned from callback (starts immediately, no independent wait)
             - Ensures symmetric timing across all players
         """
         try:
             self.target_start_time = target_timestamp
             self.actual_start_time = None
 
+            # AUDIO-VIDEO SYNC FIX: Combined callback that starts both video and audio
+            # This ensures they share the same trigger point (no race condition)
+            def combined_play_callback(dt):
+                """Combined callback that starts video and audio together."""
+                try:
+                    # Start video playback on main thread (OpenGL context is active)
+                    if self.player:
+                        self.player.play()
+
+                    # Record actual start time
+                    self.actual_start_time = time.perf_counter()
+
+                    # Calculate drift
+                    if self.target_start_time:
+                        drift_ms = (self.actual_start_time - self.target_start_time) * 1000
+                        print(f"[SyncPlayer] Video started at {self.actual_start_time:.6f} "
+                              f"(target: {self.target_start_time:.6f}, "
+                              f"drift: {drift_ms:+.3f}ms)")
+                    else:
+                        print(f"[SyncPlayer] Video started at {self.actual_start_time:.6f}")
+
+                    # AUDIO-VIDEO SYNC FIX: Start audio immediately after video (same callback)
+                    # No independent waiting - audio starts from the same trigger point
+                    if self.audio_data is not None and self.samplerate is not None:
+                        def audio_play_func():
+                            """Audio thread: start playback immediately and block until complete."""
+                            sd.play(self.audio_data, self.samplerate, device=self.audio_device_index)
+                            print(f"[SyncPlayer] Audio started on device {self.audio_device_index}")
+
+                            # CRITICAL: Block until audio completes before thread exits
+                            sd.wait()
+                            print(f"[SyncPlayer] Audio finished on device {self.audio_device_index}")
+
+                        # Launch audio thread (non-daemon for proper cleanup)
+                        audio_thread = threading.Thread(target=audio_play_func, daemon=False)
+                        audio_thread.start()
+
+                        # Store thread reference for cleanup in stop()
+                        if not hasattr(self, '_audio_threads'):
+                            self._audio_threads = []
+                        self._audio_threads.append(audio_thread)
+
+                except Exception as e:
+                    print(f"[SyncPlayer] Error in combined play callback: {e}")
+                    self.actual_start_time = time.perf_counter()
+
             if delay <= 0:
                 # Delay is negative/zero - execute immediately
                 print(f"[SyncPlayer] WARNING: Pre-calculated delay {delay*1000:.1f}ms is ≤0, "
                       f"executing immediately")
-                self._video_play_callback(0)  # Direct execution
+                combined_play_callback(0)  # Direct execution
             else:
                 # Normal case: schedule with pre-calculated delay
                 print(f"[SyncPlayer] Scheduling playback with delay {delay*1000:.1f}ms "
                       f"(target: {target_timestamp:.6f})")
-                pyglet.clock.schedule_once(self._video_play_callback, delay)
-
-            # Start audio in background thread at target timestamp
-            # Audio timing is independent of video delay - syncs to absolute timestamp
-            def audio_thread_func():
-                SyncEngine.wait_until_timestamp(target_timestamp)
-
-                if self.audio_data is not None and self.samplerate is not None:
-                    sd.play(self.audio_data, self.samplerate, device=self.audio_device_index)
-                    print(f"[SyncPlayer] Audio started on device {self.audio_device_index}")
-
-            # Launch audio thread
-            audio_thread = threading.Thread(target=audio_thread_func, daemon=True)
-            audio_thread.start()
+                pyglet.clock.schedule_once(combined_play_callback, delay)
 
         except Exception as e:
             print(f"[SyncPlayer] Error in schedule_play_at_delay: {e}")
@@ -368,29 +478,89 @@ class SynchronizedPlayer:
 
         return self.actual_start_time
 
-    def arm_sync_timestamp(self, sync_timestamp: float):
+    # Default audio lead time (ms) - compensates for audio path latency
+    # (sd.play() init + PortAudio buffer fill + thread scheduling)
+    DEFAULT_AUDIO_LEAD_MS = 500.0
+
+    def arm_sync_timestamp(self, sync_timestamp: float, audio_lead_ms: float = None):
         """
-        ARM PHASE: Pre-configure sync timestamp without starting playback.
+        ARM PHASE: Pre-configure sync timestamp AND start audio thread with lead time.
 
         This is STAGE 2 of zero-ISI preparation. Call this 150ms before phase
         transition to prepare the player for instant execution.
 
+        The audio thread busy-waits to (sync_timestamp - audio_lead_ms), giving
+        audio a head start to compensate for:
+        - sd.play() initialization latency
+        - PortAudio buffer fill time
+        - Any remaining thread scheduling overhead
+
         Args:
-            sync_timestamp: Target timestamp for synchronized playback
+            sync_timestamp: Target timestamp for VIDEO playback
+            audio_lead_ms: How many ms BEFORE video the audio should start.
+                          Default: 5ms. Adjust if audio is still behind/ahead.
 
         Example:
             # During fixation (150ms before end)
             player.arm_sync_timestamp(target_timestamp)
             # ... fixation continues ...
-            # When fixation ends:
-            player.trigger_playback()  # Instant start
+            # When fixation ends, video callback fires and audio is already playing
         """
         if not self.ready.is_set():
             raise RuntimeError("Player not prepared - call prepare() first")
 
+        # Use default if not specified
+        if audio_lead_ms is None:
+            audio_lead_ms = self.DEFAULT_AUDIO_LEAD_MS
+
         self.armed_timestamp = sync_timestamp
-        print(f"[SyncPlayer] Armed with timestamp {sync_timestamp:.6f} "
-              f"(device {self.audio_device_index})")
+
+        # Calculate audio start timestamp (earlier than video to compensate for latency)
+        audio_timestamp = sync_timestamp - (audio_lead_ms / 1000.0)
+        self.target_audio_start_time = audio_timestamp
+
+        if self.audio_data is not None and self.samplerate is not None:
+            # Reference to self for closure
+            player_self = self
+
+            def audio_wait_and_play():
+                """Audio thread: busy-wait to audio_timestamp, then play."""
+                # Import here to avoid circular import
+                from playback.sync_engine import SyncEngine
+
+                # Precise busy-wait to audio timestamp (EARLIER than video)
+                SyncEngine.wait_until_timestamp(audio_timestamp)
+
+                # Record actual audio start time BEFORE sd.play() call
+                player_self.actual_audio_start_time = time.perf_counter()
+
+                # Start audio immediately after busy-wait completes
+                sd.play(player_self.audio_data, player_self.samplerate, device=player_self.audio_device_index)
+
+                # Log with timing info
+                audio_drift_ms = (player_self.actual_audio_start_time - audio_timestamp) * 1000
+                print(f"[SyncPlayer] Audio started on device {player_self.audio_device_index} "
+                      f"at {player_self.actual_audio_start_time:.6f} "
+                      f"(target: {audio_timestamp:.6f}, drift: {audio_drift_ms:+.3f}ms)")
+
+                # Block until audio completes
+                sd.wait()
+                print(f"[SyncPlayer] Audio finished on device {self.audio_device_index}")
+
+            self._audio_thread = threading.Thread(target=audio_wait_and_play, daemon=False)
+            self._audio_thread.start()  # Thread starts busy-waiting immediately
+
+            # Store for cleanup
+            if not hasattr(self, '_audio_threads'):
+                self._audio_threads = []
+            self._audio_threads.append(self._audio_thread)
+
+            print(f"[SyncPlayer] Armed: video at {sync_timestamp:.6f}, "
+                  f"audio at {audio_timestamp:.6f} ({audio_lead_ms:.1f}ms lead), "
+                  f"device {self.audio_device_index}")
+        else:
+            print(f"[SyncPlayer] Armed with timestamp {sync_timestamp:.6f} "
+                  f"(device {self.audio_device_index}, no audio)")
 
     def trigger_playback(self):
         """
@@ -458,17 +628,43 @@ class SynchronizedPlayer:
 
         CRITICAL: Waits for sounddevice audio completion before clearing buffers
         to prevent heap corruption (sounddevice reads from buffer in background thread).
+
+        CRITICAL FIX: Explicitly stops sounddevice and joins audio threads to prevent
+        DLL_INIT_FAILED (0xC0000141) caused by PortAudio DLL in inconsistent state.
         """
         try:
-            # CRITICAL FIX: Wait for sounddevice to finish with audio buffer
-            # sounddevice plays in background thread - must wait before deallocating
-            # Without this, clearing self.audio_data while sounddevice is reading it
-            # causes heap corruption (exit code 0xC0000374 on Windows)
-            if self.audio_data is not None:
-                sd.wait()  # Blocks until sounddevice finishes reading the buffer
+            # CRITICAL FIX: Join audio threads BEFORE calling sd.stop()
+            # This allows threads to complete sd.wait() naturally without interruption
+            # Prevents access violation when sd.stop() kills streams while threads are still running
+            # Note: Audio threads now use busy-wait to timestamp, so they will complete
+            # naturally after audio finishes (no Event signaling needed)
+            if hasattr(self, '_audio_threads'):
+                for thread in self._audio_threads:
+                    if thread.is_alive():
+                        # Wait for thread to complete naturally (thread will finish sd.wait() internally)
+                        thread.join(timeout=10.0)  # Increased to 10s for longer audio clips
+                        if thread.is_alive():
+                            print(f"[SyncPlayer] WARNING: Audio thread did not terminate within 10s timeout")
+
+                # Clear thread list after joining
+                self._audio_threads = []
+
+            # Clear thread reference
+            self._audio_thread = None
+
+            # NOTE: sd.stop() is NOT called here because it's a GLOBAL operation
+            # that stops ALL sounddevice streams (all players, all devices).
+            # Instead, the caller (e.g., finish_phase in video_phase.py) coordinates
+            # stopping all players first, then calls sd.stop() ONCE after ALL audio
+            # threads from ALL players have finished. This prevents interrupting
+            # other players' audio threads that are still in sd.wait().
 
             # Stop and cleanup video player
             if self.player:
+                # CRITICAL: Switch to correct OpenGL context before deleting player
+                # OpenGL resources must be deleted in the same context they were created in
+                # Without this, heap corruption (0xC0000374) occurs on subsequent trials
+                self.window.switch_to()
                 self.player.pause()
                 self.player.delete()  # Properly releases resources
                 self.player = None

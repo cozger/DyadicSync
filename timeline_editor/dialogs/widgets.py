@@ -327,6 +327,36 @@ class TemplateVariableWidget(ttk.Frame):
             self.file_widget.set(value)
         self._on_mode_change()
 
+    def set_enabled(self, enabled: bool):
+        """Enable or disable the entire widget."""
+        state = 'normal' if enabled else 'disabled'
+        # Disable all children
+        for child in self.winfo_children():
+            try:
+                if isinstance(child, ttk.Radiobutton):
+                    child.config(state=state)
+                elif isinstance(child, ttk.Frame):
+                    for subchild in child.winfo_children():
+                        try:
+                            if hasattr(subchild, 'config'):
+                                subchild.config(state=state)
+                        except tk.TclError:
+                            pass
+            except tk.TclError:
+                pass
+
+        if enabled:
+            # Restore proper state based on mode
+            self._on_mode_change()
+        else:
+            # Disable everything
+            self.template_combo.config(state='disabled')
+            self.file_widget.entry.config(state='disabled')
+            try:
+                self.file_widget.children['!button'].config(state='disabled')
+            except (KeyError, tk.TclError):
+                pass
+
 
 class ScaleTypeSelector(ttk.Frame):
     """

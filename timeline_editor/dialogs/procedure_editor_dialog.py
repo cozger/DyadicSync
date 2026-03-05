@@ -215,7 +215,7 @@ class ProcedureEditorDialog(BaseDialog):
         if isinstance(phase, FixationPhase):
             return f"({phase.duration}s)"
         elif isinstance(phase, VideoPhase):
-            return f"(P1: {phase.participant_1_video}, P2: {phase.participant_2_video})"
+            return f"(auto from CSV, target: {phase.display_target})"
         elif isinstance(phase, RatingPhase):
             return f"(Question: {phase.question[:20]}...)"
         elif isinstance(phase, InstructionPhase):
@@ -266,7 +266,7 @@ class ProcedureEditorDialog(BaseDialog):
         if phase_type_name == 'Fixation':
             phase = FixationPhase(duration=3.0)
         elif phase_type_name == 'Video':
-            phase = VideoPhase(p1_video="{video1}", p2_video="{video2}")
+            phase = VideoPhase()
         elif phase_type_name == 'Rating':
             phase = RatingPhase(question="How did you feel?", scale_type='likert7')
         elif phase_type_name == 'Instruction':

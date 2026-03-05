@@ -16,6 +16,7 @@ sys.path.append(str(Path(__file__).parent.parent))
 
 from core.execution.timeline import Timeline
 from core.execution.block import Block
+from core.execution.branch_block import BranchBlock
 from timeline_editor.timeline_canvas import TimelineCanvas
 from timeline_editor.property_panel import PropertyPanel
 from gui.preview_panel import PreviewPanel
@@ -127,6 +128,7 @@ class EditorWindow(tk.Tk):
         edit_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="Edit", menu=edit_menu)
         edit_menu.add_command(label="Add Block", command=self._add_block, accelerator="Ctrl+B")
+        edit_menu.add_command(label="Add Branch Block", command=self._add_branch_block, accelerator="Ctrl+Shift+B")
         edit_menu.add_command(label="Duplicate Block", command=self._duplicate_block, accelerator="Ctrl+D")
         edit_menu.add_command(label="Delete Block", command=self._delete_block, accelerator="Del")
 
@@ -151,6 +153,7 @@ class EditorWindow(tk.Tk):
         self.bind("<Control-s>", lambda e: self._save_timeline())
         self.bind("<Control-Shift-S>", lambda e: self._save_timeline_as())
         self.bind("<Control-b>", lambda e: self._add_block())
+        self.bind("<Control-Shift-B>", lambda e: self._add_branch_block())
         self.bind("<Control-d>", lambda e: self._duplicate_block())
         self.bind("<Delete>", lambda e: self._delete_block())
         self.bind("<F5>", lambda e: self._run_experiment())
@@ -178,6 +181,8 @@ class EditorWindow(tk.Tk):
         add_block_menu.add_command(label="Baseline Block", command=lambda: self._add_block('baseline'))
         add_block_menu.add_command(label="Instruction Block", command=lambda: self._add_block('instruction'))
         add_block_menu.add_command(label="Empty Block", command=lambda: self._add_block('empty'))
+        add_block_menu.add_separator()
+        add_block_menu.add_command(label="Branch Block (multi-variant)", command=self._add_branch_block)
 
         ttk.Button(toolbar, text="Duplicate", command=self._duplicate_block).pack(side=tk.LEFT, padx=2, pady=2)
         ttk.Button(toolbar, text="Delete", command=self._delete_block).pack(side=tk.LEFT, padx=2, pady=2)
@@ -337,6 +342,7 @@ class EditorWindow(tk.Tk):
             self.property_panel.timeline = self.timeline  # Update timeline reference for validation
             self.timeline_canvas.refresh()
             self.property_panel.clear()
+            self.preview_panel.stop_live_previews()
             self.preview_panel.clear()
             self._update_statusbar()
             self._set_modified(False)
@@ -373,10 +379,10 @@ class EditorWindow(tk.Tk):
 
                 self.timeline_canvas.refresh()
                 self.property_panel.clear()
-                self.preview_panel.clear()
                 self._update_statusbar()
                 self._set_modified(False)
                 self.status_label.config(text=f"Loaded: {Path(filename).name}")
+                self._update_monitor_previews()
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to load timeline file:\n\n{str(e)}")
                 import traceback
@@ -531,7 +537,7 @@ class EditorWindow(tk.Tk):
                 block = Block(name=unique_name, block_type='trial_based')
                 proc = Procedure("Standard Trial")
                 proc.add_phase(FixationPhase(duration=3.0))
-                proc.add_phase(VideoPhase(participant_1_video="{video1}", participant_2_video="{video2}"))
+                proc.add_phase(VideoPhase())
                 proc.add_phase(RatingPhase(question="How did you feel?"))
                 block.procedure = proc
 
@@ -554,6 +560,84 @@ class EditorWindow(tk.Tk):
             import traceback
             traceback.print_exc()
 
+    def _add_branch_block(self):
+        """Add a new branch block to the timeline."""
+        try:
+            from core.execution.procedure import Procedure
+            from core.execution.phases.fixation_phase import FixationPhase
+            from core.execution.phases.video_phase import VideoPhase
+            from core.execution.phases.rating_phase import RatingPhase
+            from core.execution.phases.instruction_phase import InstructionPhase
+
+            # Generate unique name
+            unique_name = self._generate_unique_block_name("Branch Block")
+
+            # Create branch block
+            branch = BranchBlock(name=unique_name)
+
+            # Create default variants
+            # Variant 1: P1 Viewer
+            v1 = Block(name="P1 Viewer", block_type='variant')
+            v1_proc = Procedure("P1 Viewer Procedure")
+            v1_proc.add_phase(InstructionPhase(
+                name="Viewer Instruction",
+                text="You will watch the video.",
+                display_target="p1",
+                duration=3.0
+            ))
+            v1_proc.add_phase(FixationPhase(duration=3.0, display_target="p1"))
+            v1_proc.add_phase(VideoPhase(display_target="p1"))
+            v1_proc.add_phase(RatingPhase(
+                question="How did you feel?",
+                display_target="both"
+            ))
+            v1.procedure = v1_proc
+            branch.add_variant(v1)
+
+            # Variant 2: P2 Viewer
+            v2 = Block(name="P2 Viewer", block_type='variant')
+            v2_proc = Procedure("P2 Viewer Procedure")
+            v2_proc.add_phase(InstructionPhase(
+                name="Viewer Instruction",
+                text="You will watch the video.",
+                display_target="p2",
+                duration=3.0
+            ))
+            v2_proc.add_phase(FixationPhase(duration=3.0, display_target="p2"))
+            v2_proc.add_phase(VideoPhase(display_target="p2"))
+            v2_proc.add_phase(RatingPhase(
+                question="How did you feel?",
+                display_target="both"
+            ))
+            v2.procedure = v2_proc
+            branch.add_variant(v2)
+
+            # Variant 3: Joint
+            v3 = Block(name="Joint", block_type='variant')
+            v3_proc = Procedure("Joint Procedure")
+            v3_proc.add_phase(FixationPhase(duration=3.0, display_target="both"))
+            v3_proc.add_phase(VideoPhase(display_target="both"))
+            v3_proc.add_phase(RatingPhase(
+                question="How did you feel?",
+                display_target="both"
+            ))
+            v3.procedure = v3_proc
+            branch.add_variant(v3)
+
+            # Set default selection config
+            branch.selection.method = 'balanced'
+
+            self.timeline.add_block(branch)
+            self._set_modified(True)
+            self._update_statusbar()
+            self.timeline_canvas.refresh()
+            self.status_label.config(text=f"Branch block added: {branch.name}")
+
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to add branch block:\n{str(e)}")
+            import traceback
+            traceback.print_exc()
+
     def _duplicate_block(self):
         """Duplicate the selected block."""
         try:
@@ -564,7 +648,12 @@ class EditorWindow(tk.Tk):
 
                 # Serialize and deserialize to create a deep copy
                 block_data = original_block.to_dict()
-                new_block = Block.from_dict(block_data)
+
+                # Deserialize based on block type
+                if isinstance(original_block, BranchBlock):
+                    new_block = BranchBlock.from_dict(block_data)
+                else:
+                    new_block = Block.from_dict(block_data)
 
                 # Generate unique name for the duplicate
                 new_block.name = self._generate_unique_block_name(original_block.name)
@@ -613,6 +702,7 @@ class EditorWindow(tk.Tk):
             # Device configuration was saved to timeline metadata
             self._set_modified(True)
             self.status_label.config(text="Device configuration updated")
+            self._update_monitor_previews()
             # Auto-save after device setup
             if self.current_file:
                 self._save_timeline()
@@ -772,6 +862,17 @@ class EditorWindow(tk.Tk):
         info_text.insert("1.0", summary)
         info_text.config(state=tk.DISABLED)
 
+        # Options frame
+        options_frame = ttk.LabelFrame(dialog, text="Options")
+        options_frame.pack(fill=tk.X, padx=10, pady=5)
+
+        windowed_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            options_frame,
+            text="Windowed Mode (debug) - Small preview windows instead of fullscreen",
+            variable=windowed_var
+        ).pack(anchor=tk.W, padx=10, pady=5)
+
         # Button frame
         button_frame = ttk.Frame(dialog)
         button_frame.pack(pady=10)
@@ -826,7 +927,8 @@ class EditorWindow(tk.Tk):
                     subject_id=subject_id,
                     session=session,
                     headset=headset,
-                    output_dir=output_dir
+                    output_dir=output_dir,
+                    windowed_mode=windowed_var.get()
                 )
 
             except Exception as e:
@@ -869,9 +971,33 @@ class EditorWindow(tk.Tk):
                 return self._save_timeline()
         return True
 
+    def _update_monitor_previews(self):
+        """Start live previews for configured P1/P2 monitors."""
+        p1_idx = self.timeline.metadata.get('participant_1_monitor')
+        p2_idx = self.timeline.metadata.get('participant_2_monitor')
+
+        if p1_idx is None or p2_idx is None:
+            self.preview_panel.stop_live_previews()
+            return
+
+        from core.device_scanner import DeviceScanner
+        scanner = DeviceScanner()
+        displays = scanner.scan_displays()
+
+        p1_info = p2_info = None
+        for d in displays:
+            if d.index == p1_idx:
+                p1_info = {'x': d.x, 'y': d.y, 'width': d.width, 'height': d.height}
+            if d.index == p2_idx:
+                p2_info = {'x': d.x, 'y': d.y, 'width': d.width, 'height': d.height}
+
+        self.preview_panel.stop_live_previews()
+        self.preview_panel.start_live_previews(p1_idx, p2_idx, p1_info, p2_info)
+
     def _on_closing(self):
         """Handle window close event."""
         if self._check_save_modified():
+            self.preview_panel.stop_live_previews()
             self.destroy()
 
 

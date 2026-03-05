@@ -26,34 +26,40 @@ class VideoPhase(Phase):
     Phase for playing synchronized videos to two participants.
 
     Features:
-    - Timestamp-based synchronization (to be implemented with SyncEngine)
-    - Per-participant video selection
+    - Timestamp-based synchronization via SyncEngine
+    - Per-participant video selection (implicit individualization)
     - Automatic duration detection
     - LSL markers for video start/end
     - Template variable support ({video1}, {video2})
+    - display_target for turn-taking (p1, p2, or both)
     """
 
     def __init__(
         self,
         name: str = "Video Playback",
-        participant_1_video: str = "",
-        participant_2_video: str = "",
-        auto_advance: bool = True
+        participant_1_video: str = "{VideoPath}",
+        participant_2_video: str = "{VideoPath}",
+        auto_advance: bool = True,
+        display_target: str = "both"
     ):
         """
         Initialize video phase.
 
         Args:
             name: Phase name
-            participant_1_video: Path to P1 video (or "{column}" template)
-            participant_2_video: Path to P2 video (or "{column}" template)
+            participant_1_video: Path to video (default "{VideoPath}" auto-resolves from CSV)
+            participant_2_video: Path to video (default "{VideoPath}" auto-resolves from CSV)
             auto_advance: Automatically proceed when videos finish
+            display_target: Which participants see video:
+                - "p1": Only P1 sees video with audio; P2 sees blank screen
+                - "p2": Only P2 sees video with audio; P1 sees blank screen
+                - "both": Both see video with audio
 
         Note:
-            Markers are configured via marker_bindings list.
-            Common events: video_start, video_p1_end, video_p2_end, video_both_complete
+            Video is selected automatically from the trial list CSV (VideoPath column).
+            display_target is set per variant to control which monitors show the video.
         """
-        super().__init__(name)
+        super().__init__(name, display_target=display_target)
         self.participant_1_video = participant_1_video
         self.participant_2_video = participant_2_video
         self.auto_advance = auto_advance
@@ -75,35 +81,61 @@ class VideoPhase(Phase):
         (fixation or rating), loading both videos and extracting audio to
         eliminate the ~2 second ISI gap.
 
+        Turn-Taking Support:
+        - Only creates video players for visible participants (based on display_target)
+        - Non-visible participants see blank screen and receive no audio
+        - Audio is automatically routed only to visible participant(s)
+
         Timing: Should complete within 2 seconds (parallelized loading)
         """
-        logger.info(f"VideoPhase STAGE 1: Loading resources for {os.path.basename(self.participant_1_video)}")
+        show_p1 = self.should_show_to_p1()
+        show_p2 = self.should_show_to_p2()
+
+        logger.info(f"VideoPhase STAGE 1: Loading resources (display_target={self.display_target}, P1={show_p1}, P2={show_p2})")
 
         # Debug logging to track video paths in prepare
         print(f"[VideoPhase._prepare_impl] DEBUG Preparation:")
         print(f"  Phase name: {self.name}")
+        print(f"  display_target: '{self.display_target}' (P1 visible: {show_p1}, P2 visible: {show_p2})")
         print(f"  P1 video path: '{self.participant_1_video}'")
         print(f"  P2 video path: '{self.participant_2_video}'")
+        print(f"[VideoPhase] Audio routing: P1->device {device_manager.audio_device_p1}, "
+              f"P2->device {device_manager.audio_device_p2}")
 
-        # Create synchronized players
-        self.player1 = device_manager.create_video_player(
-            video_path=self.participant_1_video,
-            display_id=0,
-            audio_device_id=device_manager.audio_device_p1
-        )
-        self.player2 = device_manager.create_video_player(
-            video_path=self.participant_2_video,
-            display_id=1,
-            audio_device_id=device_manager.audio_device_p2
-        )
-
-        # Prepare both players IN PARALLEL (halves loading time)
+        # Create synchronized players ONLY for visible participants
+        futures = []
         prep_start = time.time()
+
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-            future1 = executor.submit(self.player1.prepare)
-            future2 = executor.submit(self.player2.prepare)
-            # Wait for both to complete
-            concurrent.futures.wait([future1, future2])
+            # P1 player creation (only if visible)
+            if show_p1:
+                self.player1 = device_manager.create_video_player(
+                    video_path=self.participant_1_video,
+                    display_id=0,
+                    audio_device_id=device_manager.audio_device_p1
+                )
+                futures.append(executor.submit(self.player1.prepare))
+                logger.info(f"VideoPhase STAGE 1: Creating P1 player")
+            else:
+                self.player1 = None
+                logger.info(f"VideoPhase STAGE 1: P1 not visible (display_target={self.display_target}) - no player")
+
+            # P2 player creation (only if visible)
+            if show_p2:
+                self.player2 = device_manager.create_video_player(
+                    video_path=self.participant_2_video,
+                    display_id=1,
+                    audio_device_id=device_manager.audio_device_p2
+                )
+                futures.append(executor.submit(self.player2.prepare))
+                logger.info(f"VideoPhase STAGE 1: Creating P2 player")
+            else:
+                self.player2 = None
+                logger.info(f"VideoPhase STAGE 1: P2 not visible (display_target={self.display_target}) - no player")
+
+            # Wait for any video players to complete preparation
+            if futures:
+                concurrent.futures.wait(futures)
 
         prep_duration = time.time() - prep_start
         logger.info(f"VideoPhase STAGE 1: Resources loaded in {prep_duration:.2f}s")
@@ -122,13 +154,19 @@ class VideoPhase(Phase):
         PARALLEL EXECUTION: This method runs concurrently with STAGE 1 (audio extraction).
         Both audio and video loading happen in parallel for maximum efficiency.
 
+        Turn-Taking Support:
+        - Only creates Pyglet players for visible participants (based on display_target)
+        - Skips preparation for non-visible participants
+
         Timing: Completes in ~100ms (Pyglet player creation + calculations)
         """
-        if not self.player1 or not self.player2:
-            raise RuntimeError(
-                "VideoPhase STAGE 2 error: Resources not loaded. "
-                "Must call prepare() (STAGE 1) first."
-            )
+        # Check if we have at least one video player (based on display_target)
+        has_video = self.player1 is not None or self.player2 is not None
+
+        if not has_video:
+            # Neither participant is visible - no video playback needed
+            logger.info(f"VideoPhase STAGE 2: No video players - display_target={self.display_target}")
+            return
 
         logger.info(f"VideoPhase STAGE 2: Creating Pyglet players on main thread...")
 
@@ -137,32 +175,38 @@ class VideoPhase(Phase):
         # Moving this to STAGE 2 ensures sync timestamp accounts for creation time
         # NOTE: Player creation is INDEPENDENT of audio extraction - runs in parallel!
         try:
-            self.player1.create_player()
-            self.player2.create_player()
-            logger.info(f"VideoPhase STAGE 2: Pyglet players created successfully")
+            if self.player1:
+                self.player1.create_player()
+                logger.info(f"VideoPhase STAGE 2: P1 Pyglet player created")
+            if self.player2:
+                self.player2.create_player()
+                logger.info(f"VideoPhase STAGE 2: P2 Pyglet player created")
         except Exception as e:
             raise RuntimeError(f"Failed to create Pyglet players in STAGE 2: {e}")
 
-        # NOW verify both audio extraction AND player creation completed
-        # Wait for BOTH flags to be set (with timeout for safety)
+        # NOW verify audio extraction AND player creation completed for active players
+        # Wait for flags to be set (with timeout for safety)
         import time
         timeout = 5.0  # 5 second timeout (should be <500ms typically)
         wait_start = time.time()
 
         while True:
-            audio_ready = self.player1.ready.is_set() and self.player2.ready.is_set()
-            players_ready = self.player1.player_ready.is_set() and self.player2.player_ready.is_set()
+            # Check readiness only for players that exist
+            p1_audio_ok = self.player1.ready.is_set() if self.player1 else True
+            p2_audio_ok = self.player2.ready.is_set() if self.player2 else True
+            p1_player_ok = self.player1.player_ready.is_set() if self.player1 else True
+            p2_player_ok = self.player2.player_ready.is_set() if self.player2 else True
 
-            if audio_ready and players_ready:
-                logger.info(f"VideoPhase STAGE 2: Both audio and players ready")
+            if p1_audio_ok and p2_audio_ok and p1_player_ok and p2_player_ok:
+                logger.info(f"VideoPhase STAGE 2: All active players ready")
                 break
 
             if time.time() - wait_start > timeout:
                 # Timeout - provide detailed error message
-                p1_audio = "ready" if self.player1.ready.is_set() else "NOT READY"
-                p2_audio = "ready" if self.player2.ready.is_set() else "NOT READY"
-                p1_player = "ready" if self.player1.player_ready.is_set() else "NOT READY"
-                p2_player = "ready" if self.player2.player_ready.is_set() else "NOT READY"
+                p1_audio = "ready" if p1_audio_ok else "NOT READY"
+                p2_audio = "ready" if p2_audio_ok else "NOT READY"
+                p1_player = "ready" if p1_player_ok else "NOT READY"
+                p2_player = "ready" if p2_player_ok else "NOT READY"
 
                 raise RuntimeError(
                     f"VideoPhase STAGE 2 error: Timeout waiting for preparation.\n"
@@ -179,9 +223,11 @@ class VideoPhase(Phase):
         # This ensures timestamp is always in the future when trigger_playback() is called
         sync_timestamp = SyncEngine.calculate_sync_timestamp(prep_time_ms)
 
-        # Arm both players with the sync timestamp (instant execution later)
-        self.player1.arm_sync_timestamp(sync_timestamp)
-        self.player2.arm_sync_timestamp(sync_timestamp)
+        # Arm active players with the sync timestamp (instant execution later)
+        if self.player1:
+            self.player1.arm_sync_timestamp(sync_timestamp)
+        if self.player2:
+            self.player2.arm_sync_timestamp(sync_timestamp)
 
         logger.info(f"VideoPhase STAGE 2: Players created and armed for t={sync_timestamp:.6f}")
 
@@ -194,6 +240,12 @@ class VideoPhase(Phase):
         by the time this method is called. This enables instant execution
         with <5ms onset delay.
 
+        Turn-Taking Support:
+        - Visible participants (based on display_target) see video with audio
+        - Non-visible participants see blank screen
+        - Phase completes when all video players finish (non-visible participants
+          are marked complete immediately)
+
         Args:
             device_manager: DeviceManager instance (for window access)
             lsl_outlet: LSL StreamOutlet
@@ -202,10 +254,10 @@ class VideoPhase(Phase):
             on_complete: Callback function(result_dict) called when phase completes
 
         Events emitted:
-            - video_start: When both videos begin playback
-            - video_p1_end: When P1's video completes
-            - video_p2_end: When P2's video completes
-            - video_both_complete: When both videos have finished
+            - video_start: When videos begin playback
+            - video_p1_end: When P1's video completes (or immediately if not visible)
+            - video_p2_end: When P2's video completes (or immediately if not visible)
+            - video_both_complete: When all participants have finished
 
         Note:
             This method is non-blocking. It schedules video playback and returns immediately.
@@ -213,48 +265,56 @@ class VideoPhase(Phase):
         """
         scheduled_start = time.time()
 
-        # Verify players are prepared (should already be done during previous phase)
-        if not self.player1 or not self.player2:
-            raise RuntimeError(
-                "VideoPhase execute() called without preparation! "
-                "Players should be loaded during STAGE 1 (previous phase). "
-                "This indicates a problem with the preloading orchestration."
-            )
+        # Determine which participants see video based on display_target
+        p1_has_video = self.should_show_to_p1() and self.player1 is not None
+        p2_has_video = self.should_show_to_p2() and self.player2 is not None
+        total_video_players = (1 if p1_has_video else 0) + (1 if p2_has_video else 0)
 
-        # HIGH PRIORITY FIX #4: Verify players are in ready state
-        if not self.player1.ready.is_set() or not self.player2.ready.is_set():
-            raise RuntimeError(
-                "VideoPhase execute() called but players not ready! "
-                "Player 1 ready: {}, Player 2 ready: {}. "
-                "Preparation may have failed - check logs for errors during prepare().".format(
-                    self.player1.ready.is_set(), self.player2.ready.is_set()
+        # Verify video players are prepared for participants in video mode
+        if p1_has_video:
+            if not self.player1.ready.is_set():
+                raise RuntimeError(
+                    f"VideoPhase execute() called but P1 player not ready! "
+                    f"Preparation may have failed - check logs."
                 )
-            )
+            if not self.player1.player:
+                raise RuntimeError(
+                    f"VideoPhase execute() called but P1 Pyglet player not created! "
+                    f"STAGE 2 preparation may have been skipped."
+                )
+            if not self.player1.armed_timestamp:
+                raise RuntimeError(
+                    f"VideoPhase execute() called but P1 player not armed! "
+                    f"STAGE 2 sync preparation may have failed."
+                )
 
-        # Verify Pyglet players were created in STAGE 2
-        if not self.player1.player or not self.player2.player:
-            raise RuntimeError(
-                "VideoPhase execute() called but Pyglet players not created! "
-                "Players should be created during STAGE 2 (150ms before execute). "
-                "This indicates STAGE 2 preparation was skipped or failed."
-            )
+        if p2_has_video:
+            if not self.player2.ready.is_set():
+                raise RuntimeError(
+                    f"VideoPhase execute() called but P2 player not ready! "
+                    f"Preparation may have failed - check logs."
+                )
+            if not self.player2.player:
+                raise RuntimeError(
+                    f"VideoPhase execute() called but P2 Pyglet player not created! "
+                    f"STAGE 2 preparation may have been skipped."
+                )
+            if not self.player2.armed_timestamp:
+                raise RuntimeError(
+                    f"VideoPhase execute() called but P2 player not armed! "
+                    f"STAGE 2 sync preparation may have failed."
+                )
 
-        # Verify players are armed (should already be done in STAGE 2)
-        if not self.player1.armed_timestamp or not self.player2.armed_timestamp:
-            raise RuntimeError(
-                "VideoPhase execute() called without sync preparation! "
-                "Players should be armed during STAGE 2 (150ms before execute). "
-                "This indicates a problem with the late-stage preload timing."
-            )
-
-        logger.info(f"VideoPhase execute(): Players created and armed in STAGE 2, triggering instant playback")
+        logger.info(f"VideoPhase execute(): display_target={self.display_target}, "
+                    f"P1 visible={p1_has_video}, P2 visible={p2_has_video}, "
+                    f"video players={total_video_players}")
 
         # Get windows
         window1 = device_manager.window1
         window2 = device_manager.window2
 
-        # Track completion
-        completed_videos = {'count': 0}
+        # Track completion - need to track 2 completions (one per participant)
+        completed_count = {'count': 0}
         player1_ended = {'value': False}
         player2_ended = {'value': False}
 
@@ -262,21 +322,46 @@ class VideoPhase(Phase):
         check_player1_time_func = None
         check_player2_time_func = None
 
+        # Non-visible participants see blank screen (no instruction labels needed)
+
+        # Variables for result tracking (set during execution)
+        actual_start = scheduled_start
+        onset_delay_ms = 0.0
+        sync_result = {'max_drift_ms': 0, 'spread_ms': 0, 'success': True, 'sync_timestamp': 0}
+
         def finish_phase():
             """Cleanup and complete phase."""
+            nonlocal actual_start, onset_delay_ms, sync_result
             end_time = time.time()
 
             # Send video_both_complete event markers
             self.send_event_markers("video_both_complete", lsl_outlet, trial_data)
 
-            # Cleanup
+            # Cleanup scheduled timers
             if check_player1_time_func:
                 pyglet.clock.unschedule(check_player1_time_func)
             if check_player2_time_func:
                 pyglet.clock.unschedule(check_player2_time_func)
 
-            self.player1.stop()
-            self.player2.stop()
+            # Stop video players (only if they exist)
+            if self.player1:
+                self.player1.stop()
+            if self.player2:
+                self.player2.stop()
+
+            # CRITICAL FIX: Stop all sounddevice streams ONCE after BOTH players finish
+            # sd.stop() is a GLOBAL operation that stops ALL streams across all devices.
+            # We call it here (not in individual player.stop() methods) to ensure ALL
+            # audio threads from ALL players have completed their sd.wait() calls before
+            # any streams are stopped. This prevents heap corruption from interrupting
+            # threads that are still in sd.wait().
+            if p1_has_video or p2_has_video:
+                import sounddevice as sd
+                try:
+                    sd.stop()
+                    print("[VideoPhase] All sounddevice streams stopped")
+                except Exception as e:
+                    print(f"[VideoPhase] Warning: sd.stop() failed: {e}")
 
             # Clear player references for next trial
             self.player1 = None
@@ -290,8 +375,9 @@ class VideoPhase(Phase):
             # Prepare result
             result = {
                 'duration': end_time - scheduled_start,
-                'video1_path': self.participant_1_video,
-                'video2_path': self.participant_2_video,
+                'video1_path': self.participant_1_video if p1_has_video else None,
+                'video2_path': self.participant_2_video if p2_has_video else None,
+                'display_target': self.display_target,
                 'scheduled_start': scheduled_start,
                 'actual_start': actual_start,
                 'end_time': end_time,
@@ -310,8 +396,8 @@ class VideoPhase(Phase):
 
         def mark_video_complete(player_num):
             """Mark a video as complete, send marker, and finish if both done."""
-            completed_videos['count'] += 1
-            logger.debug(f"Player {player_num} completed ({completed_videos['count']}/2)")
+            completed_count['count'] += 1
+            logger.debug(f"Participant {player_num} completed ({completed_count['count']}/2)")
 
             # Send participant-specific end marker
             if player_num == 1:
@@ -319,57 +405,46 @@ class VideoPhase(Phase):
             elif player_num == 2:
                 self.send_event_markers("video_p2_end", lsl_outlet, trial_data)
 
-            # Finish phase when both complete
-            if completed_videos['count'] >= 2:
+            # Finish phase when both participants complete (2 total)
+            if completed_count['count'] >= 2:
                 finish_phase()
 
-        # Set up draw handlers to render video textures
+        # Set up draw handlers for window 1
         @window1.event
         def on_draw():
             window1.clear()
-            # Check if player exists (may be None after cleanup during sd.wait() blocking)
-            if self.player1:
+            if p1_has_video and self.player1:
+                # Visible: render video texture
                 texture = self.player1.get_texture()
                 if texture:
-                    # Render texture to fill window
                     texture.blit(0, 0, width=window1.width, height=window1.height)
+            # Non-visible: just show cleared (black) screen
 
+        # Set up draw handlers for window 2
         @window2.event
         def on_draw():
             window2.clear()
-            # Check if player exists (may be None after cleanup during sd.wait() blocking)
-            if self.player2:
+            if p2_has_video and self.player2:
+                # Visible: render video texture
                 texture = self.player2.get_texture()
                 if texture:
-                    # Render texture to fill window
                     texture.blit(0, 0, width=window2.width, height=window2.height)
+            # Non-visible: just show cleared (black) screen
 
-        # Set up end-of-stream handlers
-        # Defensive check: Verify player objects are valid before registering events
-        if not self.player1.player:
-            raise RuntimeError(
-                f"Player 1 internal player is None - video preparation failed!\n"
-                f"Video path: {self.participant_1_video}\n"
-                f"Check FFmpeg errors above for details."
-            )
-        if not self.player2.player:
-            raise RuntimeError(
-                f"Player 2 internal player is None - video preparation failed!\n"
-                f"Video path: {self.participant_2_video}\n"
-                f"Check FFmpeg errors above for details."
-            )
+        # Set up end-of-stream handlers for video players
+        if p1_has_video:
+            @self.player1.player.event
+            def on_eos():
+                if not player1_ended['value']:
+                    player1_ended['value'] = True
+                    mark_video_complete(1)
 
-        @self.player1.player.event
-        def on_eos():
-            if not player1_ended['value']:
-                player1_ended['value'] = True
-                mark_video_complete(1)
-
-        @self.player2.player.event
-        def on_eos():
-            if not player2_ended['value']:
-                player2_ended['value'] = True
-                mark_video_complete(2)
+        if p2_has_video:
+            @self.player2.player.event
+            def on_eos():
+                if not player2_ended['value']:
+                    player2_ended['value'] = True
+                    mark_video_complete(2)
 
         # Fallback timers in case EOS doesn't fire
         def check_player1_time(dt):
@@ -391,39 +466,67 @@ class VideoPhase(Phase):
         check_player1_time_func = check_player1_time
         check_player2_time_func = check_player2_time
 
-        # ⚡ INSTANT TRIGGER - Players already armed, just trigger playback
-        logger.info("[VideoPhase] Triggering pre-armed synchronized playback")
-        sync_result = SyncEngine.trigger_synchronized_playback([self.player1, self.player2])
+        # Trigger video playback for video-mode participants
+        active_players = [p for p in [self.player1, self.player2] if p is not None]
 
-        actual_start = time.time()
-        onset_delay_ms = (actual_start - scheduled_start) * 1000
+        if active_players:
+            # ⚡ INSTANT TRIGGER - Players already armed, just trigger playback
+            logger.info(f"[VideoPhase] Triggering pre-armed synchronized playback for {len(active_players)} players")
+            sync_result = SyncEngine.trigger_synchronized_playback(active_players)
 
-        # Send video_start event markers (after videos actually started)
+            actual_start = time.time()
+            onset_delay_ms = (actual_start - scheduled_start) * 1000
+
+            # Log sync quality and onset delay
+            logger.info(
+                f"VideoPhase: Onset delay={onset_delay_ms:.1f}ms, "
+                f"Sync drift={sync_result['max_drift_ms']:.3f}ms, "
+                f"Spread={sync_result['spread_ms']:.3f}ms"
+            )
+
+            # Schedule fallback completion checks for video players
+            if p1_has_video:
+                pyglet.clock.schedule_interval(check_player1_time, 0.1)
+            if p2_has_video:
+                pyglet.clock.schedule_interval(check_player2_time, 0.1)
+
+        # Send video_start event markers
         self.send_event_markers("video_start", lsl_outlet, trial_data)
 
-        # Log sync quality and onset delay
-        logger.info(
-            f"VideoPhase: Onset delay={onset_delay_ms:.1f}ms, "
-            f"Sync drift={sync_result['max_drift_ms']:.3f}ms, "
-            f"Spread={sync_result['spread_ms']:.3f}ms"
-        )
+        # Immediately mark non-video participants as complete
+        # (they show instruction/blank for duration of the other's video)
+        if not p1_has_video:
+            player1_ended['value'] = True
+            mark_video_complete(1)
 
-        # Schedule fallback completion checks
-        pyglet.clock.schedule_interval(check_player1_time, 0.1)
-        pyglet.clock.schedule_interval(check_player2_time, 0.1)
+        if not p2_has_video:
+            player2_ended['value'] = True
+            mark_video_complete(2)
 
     def validate(self) -> List[str]:
-        """Validate video paths."""
+        """Validate video paths and display_target configuration."""
         errors = []
 
-        # Check if videos are templates or actual paths
-        if not self._is_template(self.participant_1_video):
-            if not os.path.exists(self.participant_1_video):
-                errors.append(f"Participant 1 video not found: {self.participant_1_video}")
+        # Validate display_target
+        errors.extend(self._validate_display_target())
 
-        if not self._is_template(self.participant_2_video):
-            if not os.path.exists(self.participant_2_video):
-                errors.append(f"Participant 2 video not found: {self.participant_2_video}")
+        # Only validate video paths for visible participants
+        show_p1 = self.should_show_to_p1() if not self._is_template(self.display_target) else True
+        show_p2 = self.should_show_to_p2() if not self._is_template(self.display_target) else True
+
+        if show_p1:
+            if not self._is_template(self.participant_1_video):
+                if not self.participant_1_video:
+                    errors.append("Participant 1 is visible but no video path specified")
+                elif not os.path.exists(self.participant_1_video):
+                    errors.append(f"Participant 1 video not found: {self.participant_1_video}")
+
+        if show_p2:
+            if not self._is_template(self.participant_2_video):
+                if not self.participant_2_video:
+                    errors.append("Participant 2 is visible but no video path specified")
+                elif not os.path.exists(self.participant_2_video):
+                    errors.append(f"Participant 2 video not found: {self.participant_2_video}")
 
         return errors
 
@@ -453,16 +556,21 @@ class VideoPhase(Phase):
         p1_rendered = self._replace_template(self.participant_1_video, trial_data)
         p2_rendered = self._replace_template(self.participant_2_video, trial_data)
 
+        # Render display_target (can be template like "{display_target}")
+        display_target_rendered = self._replace_template(self.display_target, trial_data)
+
         print(f"[VideoPhase.render] DEBUG Template Resolution:")
         print(f"  Trial data keys: {list(trial_data.keys()) if trial_data else 'None'}")
-        print(f"  P1: '{p1_original}' → '{p1_rendered}'")
-        print(f"  P2: '{p2_original}' → '{p2_rendered}'")
+        print(f"  P1 video: '{p1_original}' → '{p1_rendered}'")
+        print(f"  P2 video: '{p2_original}' → '{p2_rendered}'")
+        print(f"  display_target: '{self.display_target}' → '{display_target_rendered}'")
 
         rendered = VideoPhase(
             name=self.name,
             participant_1_video=p1_rendered,
             participant_2_video=p2_rendered,
-            auto_advance=self.auto_advance
+            auto_advance=self.auto_advance,
+            display_target=display_target_rendered
         )
         # Copy marker bindings to rendered instance
         rendered.marker_bindings = self.marker_bindings.copy()
@@ -477,6 +585,10 @@ class VideoPhase(Phase):
         variables.update(self._extract_variables(self.participant_1_video))
         variables.update(self._extract_variables(self.participant_2_video))
 
+        # Add display_target if it's a template
+        if self._is_template(self.display_target):
+            variables.update(self._extract_variables(self.display_target))
+
         return variables
 
     def to_dict(self) -> Dict[str, Any]:
@@ -487,19 +599,45 @@ class VideoPhase(Phase):
             'participant_1_video': self.participant_1_video,
             'participant_2_video': self.participant_2_video,
             'auto_advance': self.auto_advance,
+            'display_target': self.display_target,
             'marker_bindings': [binding.to_dict() for binding in self.marker_bindings]
         }
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'VideoPhase':
-        """Deserialize from dictionary."""
+        """
+        Deserialize from dictionary.
+
+        Migration: Converts old participant_X_mode format to display_target:
+        - p1_mode=video, p2_mode!=video -> display_target="p1"
+        - p1_mode!=video, p2_mode=video -> display_target="p2"
+        - Both video -> display_target="both"
+        """
         from core.markers import MarkerBinding
+
+        # MIGRATION: Convert old participant_X_mode format to display_target
+        display_target = data.get('display_target')
+        if display_target is None and 'participant_1_mode' in data:
+            p1_mode = data.get('participant_1_mode', 'video')
+            p2_mode = data.get('participant_2_mode', 'video')
+
+            if p1_mode == 'video' and p2_mode != 'video':
+                display_target = 'p1'
+            elif p2_mode == 'video' and p1_mode != 'video':
+                display_target = 'p2'
+            else:
+                display_target = 'both'
+
+            logger.info(f"VideoPhase.from_dict: Migrated p1_mode={p1_mode}, p2_mode={p2_mode} -> display_target={display_target}")
+        elif display_target is None:
+            display_target = 'both'
 
         phase = cls(
             name=data.get('name', 'Video Playback'),
             participant_1_video=data.get('participant_1_video', ''),
             participant_2_video=data.get('participant_2_video', ''),
-            auto_advance=data.get('auto_advance', True)
+            auto_advance=data.get('auto_advance', True),
+            display_target=display_target
         )
 
         # Load marker bindings

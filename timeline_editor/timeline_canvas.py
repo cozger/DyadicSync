@@ -4,7 +4,7 @@ Interactive timeline canvas for visualizing and editing experiment structure.
 
 import tkinter as tk
 from tkinter import ttk, Canvas, Frame, Menu
-from typing import List, Optional, Callable
+from typing import List, Optional, Callable, Dict, Tuple
 import sys
 from pathlib import Path
 import time
@@ -14,6 +14,7 @@ sys.path.append(str(Path(__file__).parent.parent))
 from gui.timeline_block import TimelineBlock, BlockType
 from core.execution.timeline import Timeline
 from core.execution.block import Block
+from core.execution.branch_block import BranchBlock
 from core.execution.phase import Phase
 
 
@@ -67,6 +68,10 @@ class TimelineCanvas(Frame):
         self._dragging_block = None
         self._drag_original_index = None
         self._drag_current_index = None
+
+        # Branch block bounds for drop zone detection
+        # Maps block_idx -> {'x', 'y', 'width', 'height', 'branch_block'}
+        self._branch_block_bounds: Dict[int, dict] = {}
 
         print(f"[DEBUG {time.time():.3f}] TimelineCanvas calling _setup_ui...")
         self._setup_ui()
@@ -253,6 +258,9 @@ class TimelineCanvas(Frame):
             block.delete()
         self.blocks.clear()
 
+        # Clear branch block bounds for drop zone detection
+        self._branch_block_bounds.clear()
+
         # Clear canvas
         print(f"[DEBUG {time.time():.3f}] Clearing canvas...")
         self.canvas.delete("all")
@@ -268,6 +276,12 @@ class TimelineCanvas(Frame):
         # Iterate over blocks in timeline
         print(f"[DEBUG {time.time():.3f}] Creating blocks from timeline...")
         for block_idx, block in enumerate(self.timeline.blocks):
+            # Handle BranchBlock separately
+            if isinstance(block, BranchBlock):
+                print(f"[DEBUG {time.time():.3f}] Processing branch block {block_idx}: {block.name}")
+                x = self._render_branch_block(block, block_idx, x, y)
+                continue
+
             print(f"[DEBUG {time.time():.3f}] Processing block {block_idx}: {block.name} (type={block.block_type})")
 
             if not block.procedure or not block.procedure.phases:
@@ -378,6 +392,119 @@ class TimelineCanvas(Frame):
         self.canvas.config(scrollregion=self.canvas.bbox("all"))
         print(f"[DEBUG {time.time():.3f}] _build_timeline COMPLETE (created {len(self.blocks)} visual blocks)")
 
+    def _render_branch_block(self, branch_block: BranchBlock, block_idx: int, x: int, y: int) -> int:
+        """
+        Render a branch block with its variants shown as stacked alternatives.
+
+        Args:
+            branch_block: BranchBlock to render
+            block_idx: Index in timeline
+            x: Starting X position
+            y: Y position
+
+        Returns:
+            New X position after rendering
+        """
+        start_x = x
+        variant_count = len(branch_block.variant_blocks)
+        total_runs = branch_block.get_effective_runs()
+
+        # Calculate branch container width based on first variant's procedure
+        max_variant_width = 0
+        if branch_block.variant_blocks:
+            # Use first variant to estimate width
+            first_variant = branch_block.variant_blocks[0]
+            if first_variant.procedure:
+                for phase in first_variant.procedure.phases:
+                    phase_duration = phase.get_estimated_duration()
+                    if phase_duration < 0:
+                        phase_duration = 30.0
+                    max_variant_width += self._duration_to_pixels(min(phase_duration, self.MAX_COMFORTABLE_DURATION))
+                    max_variant_width += self.BLOCK_SPACING
+
+        # Minimum width for the branch container
+        container_width = max(max_variant_width, 150)
+
+        # Store bounds for drop zone detection
+        container_padding = 10
+        container_height = self.BLOCK_HEIGHT + 40
+        self._branch_block_bounds[block_idx] = {
+            'x': x - container_padding,
+            'y': y - 25,
+            'width': container_width + container_padding * 2,
+            'height': container_height + 25,
+            'branch_block': branch_block
+        }
+
+        # Draw branch container (dashed border)
+        self.canvas.create_rectangle(
+            x - container_padding, y - 25,
+            x + container_width + container_padding, y + container_height,
+            outline="#2ECC71",  # Emerald green
+            dash=(5, 3),
+            width=2,
+            fill="#E8F8F5",  # Light green fill
+            tags=(f"branch_container_{block_idx}", "branch_container")
+        )
+
+        # Branch block title
+        self.canvas.create_text(
+            x + container_width // 2,
+            y - 15,
+            text=f"⎇ {branch_block.name}",
+            fill="#2ECC71",
+            font=("Arial", 10, "bold"),
+            tags=(f"branch_title_{block_idx}", "branch_title")
+        )
+
+        # Variant count and runs info
+        self.canvas.create_text(
+            x + container_width // 2,
+            y + container_height - 10,
+            text=f"{variant_count} variants × {total_runs} runs",
+            fill="#666666",
+            font=("Arial", 8),
+            tags=(f"branch_info_{block_idx}", "branch_info")
+        )
+
+        # Create a single visual block representing the branch
+        visual_block = TimelineBlock(
+            self.canvas,
+            BlockType.BRANCH,
+            trial_index=block_idx,
+            x=x,
+            y=y,
+            width=container_width,
+            height=self.BLOCK_HEIGHT,
+            on_click=self._on_block_click,
+            on_double_click=self._on_block_double_click,
+            on_drag_start=self._on_block_drag_start,
+            on_drag_motion=self._on_block_drag_motion,
+            on_drag_end=self._on_block_drag_end
+        )
+        self.blocks.append(visual_block)
+
+        # Add variant names as small labels inside the block
+        if variant_count > 0:
+            variant_names = branch_block.get_variant_names()
+            # Show up to 3 variant names
+            display_names = variant_names[:3]
+            if len(variant_names) > 3:
+                display_names.append(f"+{len(variant_names) - 3} more")
+
+            for i, name in enumerate(display_names):
+                self.canvas.create_text(
+                    x + 10,
+                    y + 12 + i * 12,
+                    text=f"• {name}",
+                    fill="#FFFFFF",
+                    font=("Arial", 8),
+                    anchor=tk.W,
+                    tags=(f"variant_label_{block_idx}_{i}", "variant_label")
+                )
+
+        return x + container_width + container_padding * 2 + self.BLOCK_SPACING
+
     def _draw_ruler(self):
         """Draw time ruler at the top of the timeline."""
         # Calculate total duration from timeline
@@ -484,9 +611,16 @@ class TimelineCanvas(Frame):
     def _duplicate_selected_trial(self):
         """Duplicate the currently selected block."""
         if self.selected_block_index is not None and 0 <= self.selected_block_index < len(self.timeline.blocks):
-            import copy
+            from core.execution.block import Block
+            from core.execution.branch_block import BranchBlock
+
             block = self.timeline.blocks[self.selected_block_index]
-            duplicate = copy.deepcopy(block)
+            # Use serialization instead of deepcopy to avoid issues with unpicklable objects (locks, etc.)
+            block_data = block.to_dict()
+            if block_data.get('type') == 'branch':
+                duplicate = BranchBlock.from_dict(block_data)
+            else:
+                duplicate = Block.from_dict(block_data)
 
             # Generate unique name for the duplicate
             duplicate.name = self._generate_unique_block_name(block.name)
@@ -629,7 +763,7 @@ class TimelineCanvas(Frame):
 
     def _on_block_drag_end(self, block: TimelineBlock):
         """
-        Handle block drag end - perform reordering.
+        Handle block drag end - perform reordering or drop into branch.
 
         Args:
             block: The TimelineBlock that was dragged
@@ -651,6 +785,26 @@ class TimelineCanvas(Frame):
             block.set_position(block._original_x, block._original_y)
             self._reset_drag_state()
             return
+
+        # Check if dropped over a branch block (for conversion to variant)
+        branch_target = self._find_branch_at_position(canvas_x, canvas_y)
+        if branch_target:
+            branch_idx, target_branch = branch_target
+            source_block = self.timeline.blocks[self._drag_original_index]
+
+            # Prevent dropping branch blocks (no nesting) and self-drop
+            if not isinstance(source_block, BranchBlock) and branch_idx != self._drag_original_index:
+                print(f"[DEBUG] Dropping block '{source_block.name}' into branch '{target_branch.name}'")
+                self._convert_block_to_variant(self._drag_original_index, target_branch)
+                self._reset_drag_state()
+                self.refresh()
+
+                # Notify property panel to update
+                if self.on_block_select:
+                    self.on_block_select(target_branch)
+                return
+            elif isinstance(source_block, BranchBlock):
+                print(f"[DEBUG] Cannot nest branch blocks - ignoring drop")
 
         old_index = self._drag_original_index
         new_index = self._calculate_drop_index(canvas_x)
@@ -702,3 +856,39 @@ class TimelineCanvas(Frame):
         self._dragging_block = None
         self._drag_original_index = None
         self._drag_current_index = None
+
+    def _find_branch_at_position(self, canvas_x: int, canvas_y: int) -> Optional[Tuple[int, BranchBlock]]:
+        """
+        Check if a canvas position is over a branch block.
+
+        Args:
+            canvas_x: X coordinate on canvas
+            canvas_y: Y coordinate on canvas
+
+        Returns:
+            Tuple of (block_idx, branch_block) if over a branch block, None otherwise
+        """
+        for block_idx, bounds in self._branch_block_bounds.items():
+            if (bounds['x'] <= canvas_x <= bounds['x'] + bounds['width'] and
+                bounds['y'] <= canvas_y <= bounds['y'] + bounds['height']):
+                return (block_idx, bounds['branch_block'])
+        return None
+
+    def _convert_block_to_variant(self, source_idx: int, target_branch: BranchBlock):
+        """
+        Convert a timeline block to a variant and add to a branch block.
+
+        Args:
+            source_idx: Index of the block in timeline to convert
+            target_branch: BranchBlock to add the variant to
+        """
+        source_block = self.timeline.blocks[source_idx]
+
+        # Remove from timeline
+        self.timeline.blocks.pop(source_idx)
+
+        # Convert block type and add to branch
+        source_block.block_type = 'variant'
+        target_branch.add_variant(source_block)
+
+        print(f"[DEBUG] Converted block '{source_block.name}' to variant in branch '{target_branch.name}'")

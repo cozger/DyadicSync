@@ -27,14 +27,22 @@ class Phase(ABC):
     - BaselinePhase: Baseline recording period
     """
 
-    def __init__(self, name: str):
+    # Valid display_target values
+    VALID_DISPLAY_TARGETS = ('p1', 'p2', 'both')
+
+    def __init__(self, name: str, display_target: str = "both"):
         """
         Initialize phase.
 
         Args:
             name: Human-readable phase name
+            display_target: Which participants see this phase:
+                - "p1": Only P1 sees phase; P2 sees blank screen
+                - "p2": Only P2 sees phase; P1 sees blank screen
+                - "both": Both participants see phase (default)
         """
         self.name = name
+        self.display_target = display_target
 
         # Event marker system
         self.marker_bindings: List[MarkerBinding] = []
@@ -46,6 +54,26 @@ class Phase(ABC):
         self._is_sync_prepared = False
         self._prepare_lock = threading.Lock()
         self._next_phase: Optional['Phase'] = None  # Injected by Procedure for time-borrowing
+
+    def should_show_to_p1(self) -> bool:
+        """Check if this phase should be shown to Participant 1."""
+        return self.display_target in ('p1', 'both')
+
+    def should_show_to_p2(self) -> bool:
+        """Check if this phase should be shown to Participant 2."""
+        return self.display_target in ('p2', 'both')
+
+    def _validate_display_target(self) -> List[str]:
+        """Validate display_target value."""
+        errors = []
+        # Allow template variables in display_target
+        if not self._is_template(self.display_target):
+            if self.display_target not in self.VALID_DISPLAY_TARGETS:
+                errors.append(
+                    f"display_target must be one of {self.VALID_DISPLAY_TARGETS}, "
+                    f"got: {self.display_target}"
+                )
+        return errors
 
     @abstractmethod
     def execute(self, device_manager, lsl_outlet, trial_data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -253,9 +281,8 @@ class Phase(ABC):
 
             print(f"[Marker] Sending {marker_type} marker: {marker} → '{marker_str}' ({context_str})")
 
-            # Convert all markers to string (LSL outlet configured as 'string' type)
-            # Integer markers like 8888 auto-convert, string markers work natively
-            lsl_outlet.push_sample([str(marker)])
+            # Route marker to correct participant stream(s) via MarkerRouter
+            lsl_outlet.send(str(marker), participant)
 
             print(f"[Marker] ✓ Sent successfully via LSL")
 

@@ -16,10 +16,27 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Running the Experiment
 
-### Main Command
+### Recommended Method (Auto-activates correct environment)
 ```bash
-python WithBaseline.py
+# Timeline Editor (new architecture - RECOMMENDED)
+launch_editor.bat
+
+# Legacy experiment script
+launch_experiment.bat
 ```
+
+### Manual Method (Requires environment activation)
+```bash
+# Activate sync environment first
+conda activate sync
+
+# Then run:
+python launch_timeline_editor.py  # Timeline Editor
+# OR
+python WithBaseline.py  # Legacy script
+```
+
+**IMPORTANT**: See "Python Environment Setup" section below for why the `sync` environment is required.
 
 ### System Requirements
 - **3 screens**: Control monitor + 2 participant displays
@@ -90,6 +107,63 @@ The new execution framework uses a modular architecture with timestamp-based syn
 - Returns `sync_quality` metrics in execution result
 - Logs drift and spread to console every trial
 - No manual offset configuration required
+- **Turn-Taking Support**: Per-participant display modes (video/instruction/blank)
+
+**`RatingPhase`** (`core/execution/phases/rating_phase.py`)
+- Collects ratings from both participants simultaneously
+- Supports per-participant questions for turn-taking conditions
+- **Turn-Taking Support**: Different questions for viewer vs observer roles
+
+### Turn-Taking Conditions (New Feature)
+
+The system supports three viewing conditions that can be mixed within a single block:
+
+**Conditions:**
+1. **Joint** (default): Both participants watch videos simultaneously and rate with same question
+2. **P1 Viewer**: P1 watches video with audio, P2 sees instruction text ("observe" role)
+3. **P2 Viewer**: P2 watches video with audio, P1 sees instruction text ("observe" role)
+
+**CSV Format for Turn-Taking:**
+```csv
+VideoPath1,VideoPath2,condition,viewer
+C:\...\video1.mp4,C:\...\video1.mp4,turn_taking,1
+C:\...\video2.mp4,C:\...\video2.mp4,turn_taking,2
+C:\...\video3.mp4,C:\...\video3.mp4,joint,
+```
+
+- `condition`: `turn_taking` | `joint`
+- `viewer`: `1` | `2` | empty (empty for joint, or auto-assigned with balanced randomization)
+
+**Automatic Viewer Assignment:**
+When `viewer` column is empty for `turn_taking` trials, the system automatically assigns viewers with balanced randomization (~50/50 P1 vs P2).
+
+**Timeline Editor Configuration:**
+1. **VideoPhase**: Set `participant_X_mode` to "video", "instruction", or "blank"
+2. **RatingPhase**: Set optional `participant_X_question` for role-specific prompts
+   - Viewer: "How did the video make you feel?" (self-report)
+   - Observer: "How do you think they felt?" (empathic inference)
+
+**Template Variables (from CSV):**
+- `{p1_mode}`, `{p2_mode}` - Display mode per participant
+- `{role_p1}`, `{role_p2}` - Role assignment ("viewer", "observer", "joint")
+- `{viewer}` - Viewer participant number (1 or 2)
+- `{condition}` - Trial condition ("turn_taking" or "joint")
+
+**Data Output:**
+CSV output includes additional columns:
+- `Condition`: "turn_taking" | "joint"
+- `Role`: "viewer" | "observer" | "joint"
+- `Viewer`: 1 | 2 | null
+
+**LSL Markers for Turn-Taking:**
+| Marker | Description |
+|--------|-------------|
+| 110# | Turn-taking trial # start (P1 viewer) |
+| 120# | Turn-taking trial # start (P2 viewer) |
+| 310#0$ | P1 viewer self-report rating |
+| 410#0$ | P1 observer rating |
+| 520#0$ | P2 viewer self-report rating |
+| 620#0$ | P2 observer rating |
 
 ### Legacy Architecture (WithBaseline.py)
 
@@ -335,9 +409,79 @@ EEG data and LSL markers are recorded by LabRecorder (external software) in sepa
 
 ## Common Issues & Solutions
 
+### Exit Code 3221225477 (0xC0000005 - Access Violation) ⚠️ MOST COMMON
+
+**Symptoms**: Experiment crashes immediately or during video playback with exit code 3221225477 (hexadecimal 0xC0000005)
+
+**Root Cause (99% of cases)**: Wrong Python environment - running with base environment instead of `sync` environment
+
+**Why This Happens**:
+- Base Python environment (3.13.x) does NOT have required dependencies (pyglet, sounddevice, pylsl, pandas, ffmpeg-python)
+- When experiment subprocess tries to `import pyglet`, it fails immediately with Access Violation
+- This is the #1 issue for new installations
+
+**SOLUTION** (in order of ease):
+
+1. **Use launcher scripts** (EASIEST):
+   - Double-click `launch_editor.bat` for Timeline Editor
+   - Double-click `launch_experiment.bat` for legacy WithBaseline.py
+   - Scripts automatically activate the correct environment
+
+2. **Activate environment manually**:
+   ```bash
+   conda activate sync
+   python launch_timeline_editor.py
+   ```
+
+3. **Verify environment** (if still having issues):
+   ```bash
+   conda activate sync
+   python test_environment.py
+   ```
+   Should show all dependencies available
+
+**How to Confirm This Is Your Issue**:
+- Check which Python is running: `python --version`
+- If you see `3.13.x` → Wrong environment (should be `3.11.0`)
+- Try importing pyglet: `python -c "import pyglet"`
+- If ModuleNotFoundError → Confirmed wrong environment
+
+**Secondary Causes** (rare, only if sync environment is active):
+- Missing dependencies in sync environment → Run `pip install -r requirements.txt` in sync environment
+- FFmpeg DLL issues → See FFmpeg troubleshooting below
+
+---
+
+### Audio/Video Synchronization Crashes (New Architecture)
+
+The new execution architecture (`core/execution`) encountered and resolved **4 critical crashes** during development related to threading, sounddevice/PortAudio, and OpenGL resource management.
+
+**If you encounter these exit codes:**
+- **3221225501 (0xC0000141)** - DLL_INIT_FAILED: Daemon threads issue
+- **3221225622 (0xC0000096)** - PRIVILEGED_INSTRUCTION: Invalid API usage
+- **3221225477 (0xC0000005)** - ACCESS_VIOLATION: Premature cleanup
+- **3221226356 (0xC0000374)** - HEAP_CORRUPTION: Global operation coordination
+
+**Solution:** Consult `docs/AUDIO_VIDEO_SYNC_FIXES.md` for detailed diagnosis and fixes.
+
+**All crashes have been resolved** in the current codebase. The document provides:
+- Root cause analysis for each crash
+- Code references (file:line) for fixes
+- Best practices for audio/video synchronization
+- Testing checklist
+
+---
+
 **Audio device mismatch**: Run `utilities/audioscan.py` to get current device indices, update lines 21-22 in `WithBaseline.py`
 
-**Video won't load / "No decoders available"**: Ensure you have FFmpeg **shared** build installed (not "essentials"). The shared build includes DLLs required by Pyglet's video decoder. See `FFMPEG_SETUP.md` for details. Use `utilities/videotester.py` to check codec compatibility. Convert problematic videos with `utilities/video_converter.py`
+**Video won't load / "No decoders available"**:
+- **First**: Verify FFmpeg is detected: `python config/ffmpeg_config.py`
+- **Local FFmpeg** (automatic): Project uses `DyadicSync/ffmpeg/bin/ffmpeg.exe` automatically if present
+- **System FFmpeg** (fallback): Falls back to system PATH if local not found
+- **Fix**: Ensure you have FFmpeg **shared** build (not "essentials") in `ffmpeg/bin/` directory
+- See `FFMPEG_SETUP.md` for installation details
+- Use `utilities/videotester.py` to check codec compatibility
+- Convert problematic videos with `utilities/video_converter.py`
 
 **Screen not detected**: Verify 3 displays connected. Check display settings in OS. Pyglet may cache screen configuration (restart Python).
 
@@ -360,11 +504,28 @@ When modifying this codebase:
 
 ## Related Documentation
 
+- `docs/AUDIO_VIDEO_SYNC_FIXES.md` - **Audio/video synchronization crash fixes** (4 major crashes resolved)
 - `code_analysis.md` - Detailed code structure analysis
 - `gui_style_analysis.md` - GUI implementation patterns
 - `psychopy_research.md` - PsychoPy framework research notes
 - `Exp Setup Instructions.txt` - Complete experimental setup checklist
 - `CodeBook.txt` - LSL marker definitions
-- you should use the VideoEEG conda environment for this package
-- the required conda environement is here: /mnt/c/Users/canoz/Anaconda3/envs/VideoEEG/python.exe
-- the required conda environement is here: /mnt/c/Users/canoz/Anaconda3/envs/VideoEEG/python.exe
+
+## Python Environment Setup
+
+**CRITICAL**: This project requires the `sync` conda environment with Python 3.11.0
+
+**Environment Location**: `C:\Users\synchrony\miniconda3\envs\sync`
+
+**Required Activation**: Before running ANY DyadicSync code, activate the environment:
+```bash
+conda activate sync
+```
+
+**Why This Matters**: The base Python environment (3.13.9) does NOT have required dependencies (pyglet, sounddevice, pylsl, pandas, ffmpeg-python). Running without the sync environment will cause **exit code 3221225477 (Access Violation)**.
+
+**Easy Launch**: Use the provided batch scripts that auto-activate the environment:
+- `launch_editor.bat` - Launch Timeline Editor with sync environment
+- `launch_experiment.bat` - Launch legacy WithBaseline.py with sync environment
+
+**Environment Validation**: The launcher scripts check for sync environment and display helpful error messages if not found.

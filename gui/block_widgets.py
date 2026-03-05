@@ -10,6 +10,8 @@ from typing import Optional, Callable, List, Set
 import random
 import os
 from core.execution.block import Block, RandomizationConfig
+from core.execution.branch_block import BranchBlock
+from core.execution.selection_config import SelectionConfig
 from core.execution.procedure import Procedure
 from core.execution.phase import Phase
 from core.execution.phases.fixation_phase import FixationPhase
@@ -46,20 +48,32 @@ class BlockInfoEditor(ttk.LabelFrame):
         # Block Type
         ttk.Label(self, text="Block Type:").grid(row=1, column=0, sticky=tk.W, pady=5)
         self.type_var = tk.StringVar(value=block.block_type)
-        type_frame = ttk.Frame(self)
-        type_frame.grid(row=1, column=1, sticky=tk.EW, pady=5, padx=(5, 0))
+        self.type_frame = ttk.Frame(self)
+        self.type_frame.grid(row=1, column=1, sticky=tk.EW, pady=5, padx=(5, 0))
 
-        ttk.Radiobutton(
-            type_frame, text="Simple (no trials)",
+        # Radio buttons (stored as instance vars for show/hide)
+        self.simple_radio = ttk.Radiobutton(
+            self.type_frame, text="Simple (no trials)",
             variable=self.type_var, value='simple',
             command=self._on_type_change
-        ).pack(anchor=tk.W, pady=2)
+        )
 
-        ttk.Radiobutton(
-            type_frame, text="Trial-based (with trial list)",
+        self.trial_radio = ttk.Radiobutton(
+            self.type_frame, text="Trial-based (with trial list)",
             variable=self.type_var, value='trial_based',
             command=self._on_type_change
-        ).pack(anchor=tk.W, pady=2)
+        )
+
+        # Locked type label (shown when type cannot be changed)
+        self.locked_type_label = ttk.Label(
+            self.type_frame,
+            text="Simple (determined by phases)",
+            font=('Arial', 9, 'italic'),
+            foreground='gray'
+        )
+
+        # Initially show/hide based on lock status
+        self._update_type_selector_visibility()
 
         # Read-only stats
         ttk.Separator(self, orient=tk.HORIZONTAL).grid(
@@ -124,6 +138,41 @@ class BlockInfoEditor(ttk.LabelFrame):
         else:
             return str(count)
 
+    def _is_type_locked(self) -> bool:
+        """
+        Determine if block type should be locked to 'simple'.
+
+        Returns True if the block contains ONLY simple-only phases
+        (BaselinePhase, InstructionPhase), meaning the block type
+        cannot be changed to 'trial_based'.
+        """
+        if not self.block.procedure or not self.block.procedure.phases:
+            return False  # Empty blocks can be any type
+
+        SIMPLE_ONLY_PHASES = (BaselinePhase, InstructionPhase)
+
+        for phase in self.block.procedure.phases:
+            if not isinstance(phase, SIMPLE_ONLY_PHASES):
+                return False  # Found a non-simple-only phase
+
+        return True  # All phases are simple-only
+
+    def _update_type_selector_visibility(self):
+        """Show or hide type selector based on whether block type is locked."""
+        if self._is_type_locked():
+            # Hide radio buttons, show locked label
+            self.simple_radio.pack_forget()
+            self.trial_radio.pack_forget()
+            self.locked_type_label.pack(anchor=tk.W, pady=2)
+            # Ensure block is set to simple
+            self.block.block_type = 'simple'
+            self.type_var.set('simple')
+        else:
+            # Show radio buttons, hide locked label
+            self.locked_type_label.pack_forget()
+            self.simple_radio.pack(anchor=tk.W, pady=2)
+            self.trial_radio.pack(anchor=tk.W, pady=2)
+
     def _on_property_change(self):
         """Handle property change."""
         if not self._suppress_callbacks:
@@ -143,8 +192,8 @@ class BlockInfoEditor(ttk.LabelFrame):
         """Manually trigger duration calculation for current block."""
         print(f"[RECALCULATE] User requested duration recalculation for block '{self.block.name}'")
 
-        # Clear cached duration to force recalculation
-        self.block.invalidate_duration_cache()
+        # Clear VIDEO cache to force full re-probe (also clears duration cache)
+        self.block.invalidate_video_cache()
 
         # Clear LRU cache for video durations (in case files changed)
         from utilities.video_duration import clear_duration_cache
@@ -164,11 +213,10 @@ class BlockInfoEditor(ttk.LabelFrame):
         self.update_idletasks()
         print(f"[RECALCULATE] Called update_idletasks()")
 
-        # NOTE: We don't call on_change() here because PropertyPanel._handle_change()
-        # invalidates the duration cache, which would undo the calculation we just did.
-        # The timeline canvas will update the next time it refreshes (e.g., when clicking
-        # another block or when the timeline is saved/loaded).
-        print(f"[RECALCULATE] Skipping on_change() to preserve cached duration")
+        # Now safe to call on_change() - PropertyPanel._handle_change() no longer
+        # invalidates duration cache unconditionally.
+        if self.on_change:
+            self.on_change()
 
         # Log result to console
         if duration is not None:
@@ -226,6 +274,7 @@ class BlockInfoEditor(ttk.LabelFrame):
         self._original_name = block.name
         self.name_var.set(block.name)
         self.type_var.set(block.block_type)
+        self._update_type_selector_visibility()
         self.refresh_stats()
 
     def refresh_stats(self):
@@ -382,11 +431,7 @@ class ProcedureListWidget(ttk.LabelFrame):
         if phase_type == 'fixation':
             phase = FixationPhase(name="Fixation", duration=3.0)
         elif phase_type == 'video':
-            phase = VideoPhase(
-                name="Video Playback",
-                participant_1_video="{video1}",
-                participant_2_video="{video2}"
-            )
+            phase = VideoPhase(name="Video Playback")
         elif phase_type == 'rating':
             phase = RatingPhase(name="Rating Collection")
         elif phase_type == 'instruction':
@@ -481,11 +526,17 @@ class ProcedureListWidget(ttk.LabelFrame):
 class TrialListConfigEditor(ttk.LabelFrame):
     """Editor for trial list configuration (CSV source, preview)."""
 
-    def __init__(self, parent, block: Block, on_change: Optional[Callable] = None):
+    def __init__(self, parent, block: Block, on_change: Optional[Callable] = None,
+                 block_info_editor: Optional['BlockInfoEditor'] = None,
+                 on_duration_calculated: Optional[Callable] = None,
+                 timeline=None):
         super().__init__(parent, text="Trial List Configuration", padding=10)
 
         self.block = block
         self.on_change = on_change
+        self.block_info_editor = block_info_editor  # Reference to refresh stats after duration calc
+        self.on_duration_calculated = on_duration_calculated  # Callback to refresh canvas after duration calc
+        self.timeline = timeline  # Timeline reference for video_id_regex
         self._suppress_callbacks = False
 
         # Configure column weights so widgets expand to fill width
@@ -556,8 +607,8 @@ class TrialListConfigEditor(ttk.LabelFrame):
         )
         if filename:
             self.source_var.set(filename)
-            # Invalidate duration cache when CSV path changes
-            self.block.invalidate_duration_cache()
+            # Invalidate VIDEO cache when CSV path changes (full re-probe needed)
+            self.block.invalidate_video_cache()
 
     def _load_csv(self):
         """Load CSV file into trial list."""
@@ -571,18 +622,34 @@ class TrialListConfigEditor(ttk.LabelFrame):
             return
 
         try:
-            self.block.trial_list = TrialList(source=csv_path, source_type='csv')
+            # Get video_id_regex from timeline metadata if available
+            video_id_regex = r'^[A-Za-z]+'
+            if self.timeline and hasattr(self.timeline, 'metadata'):
+                video_id_regex = self.timeline.metadata.get('video_id_regex', video_id_regex)
+
+            self.block.trial_list = TrialList(source=csv_path, source_type='csv',
+                                              video_id_regex=video_id_regex)
             self.columns_label.config(text=self._get_columns_text())
             self.rows_label.config(text=self._get_row_count_text())
 
-            # Automatically calculate accurate duration after loading CSV
-            # This probes video files to get exact durations
-            self.block.calculate_accurate_duration()
-
             messagebox.showinfo("Success", f"Loaded {len(self.block.trial_list.trials)} trials from CSV.")
 
+            # Notify property panel of change FIRST (this invalidates duration cache)
             if self.on_change:
                 self.on_change()
+
+            # THEN calculate accurate duration AFTER cache invalidation
+            # This uses parallel video probing and sets _cached_duration
+            self.block.calculate_accurate_duration()
+
+            # Refresh stats display to show the newly calculated duration
+            if self.block_info_editor:
+                self.block_info_editor.refresh_stats()
+
+            # Notify that duration has been calculated (refreshes timeline canvas)
+            if self.on_duration_calculated:
+                self.on_duration_calculated()
+
         except Exception as e:
             messagebox.showerror("Error Loading CSV", f"Failed to load CSV:\n{str(e)}")
 
@@ -668,12 +735,52 @@ class RandomizationConfigEditor(ttk.LabelFrame):
         )
         self.constraint_label.grid(row=2, column=1, sticky=tk.EW, pady=5, padx=(5, 0))
 
-        # Note: Full constraint editor would be complex, leaving for future enhancement
+        # === Viewer Randomization Section ===
+        ttk.Separator(self, orient=tk.HORIZONTAL).grid(row=3, column=0, columnspan=2, sticky='ew', pady=10)
+        ttk.Label(self, text="Viewer Randomization (Turn-Taking)", font=('Arial', 9, 'bold')).grid(
+            row=4, column=0, columnspan=2, sticky=tk.W, pady=(0, 5)
+        )
+
+        # Enable viewer randomization checkbox
+        self.viewer_enabled_var = tk.BooleanVar(value=block.randomization.viewer_randomization_enabled)
+        viewer_check = ttk.Checkbutton(
+            self, text="Auto-assign viewers for turn_taking trials",
+            variable=self.viewer_enabled_var,
+            command=self._on_property_change
+        )
+        viewer_check.grid(row=5, column=0, columnspan=2, sticky=tk.W, pady=5)
+
+        # Viewer Seed
+        ttk.Label(self, text="Viewer Seed:").grid(row=6, column=0, sticky=tk.W, pady=5)
+
+        viewer_seed_frame = ttk.Frame(self)
+        viewer_seed_frame.grid(row=6, column=1, sticky=tk.EW, pady=5, padx=(5, 0))
+
+        self.viewer_seed_var = tk.StringVar(
+            value=str(block.randomization.viewer_seed) if block.randomization.viewer_seed is not None else ""
+        )
+        viewer_seed_entry = ttk.Entry(viewer_seed_frame, textvariable=self.viewer_seed_var, width=15)
+        viewer_seed_entry.pack(side=tk.LEFT, padx=(0, 5))
+        self.viewer_seed_var.trace_add('write', lambda *args: self._on_property_change())
+
+        ttk.Button(viewer_seed_frame, text="Generate", command=self._generate_viewer_seed, width=10).pack(side=tk.LEFT)
+
+        # Help text
+        ttk.Label(
+            self,
+            text="(Ensures ~50/50 split of P1 vs P2 as viewer for turn_taking trials)",
+            font=('Arial', 8, 'italic')
+        ).grid(row=7, column=0, columnspan=2, sticky=tk.W, pady=(0, 5))
 
     def _generate_seed(self):
         """Generate a random seed."""
         seed = random.randint(1000, 9999)
         self.seed_var.set(str(seed))
+
+    def _generate_viewer_seed(self):
+        """Generate a random viewer seed."""
+        seed = random.randint(1000, 9999)
+        self.viewer_seed_var.set(str(seed))
 
     def _on_property_change(self):
         """Handle property change."""
@@ -689,6 +796,12 @@ class RandomizationConfigEditor(ttk.LabelFrame):
 
             seed_str = self.seed_var.get().strip()
             self.block.randomization.seed = int(seed_str) if seed_str else None
+
+            # Viewer randomization settings
+            self.block.randomization.viewer_randomization_enabled = self.viewer_enabled_var.get()
+
+            viewer_seed_str = self.viewer_seed_var.get().strip()
+            self.block.randomization.viewer_seed = int(viewer_seed_str) if viewer_seed_str else None
         except ValueError:
             pass  # Ignore invalid seed during typing
 
@@ -700,6 +813,12 @@ class RandomizationConfigEditor(ttk.LabelFrame):
         )
         constraint_count = len(self.block.randomization.constraints)
         self.constraint_label.config(text=f"{constraint_count} constraint(s) defined")
+
+        # Viewer randomization settings
+        self.viewer_enabled_var.set(self.block.randomization.viewer_randomization_enabled)
+        self.viewer_seed_var.set(
+            str(self.block.randomization.viewer_seed) if self.block.randomization.viewer_seed is not None else ""
+        )
 
 
 class TemplateVariableValidator:
@@ -761,3 +880,595 @@ class TemplateVariableValidator:
         """
         warnings = TemplateVariableValidator.validate(block)
         return "⚠" if warnings else "✓"
+
+
+class SelectionConfigEditor(ttk.LabelFrame):
+    """Editor for branch block selection configuration."""
+
+    def __init__(self, parent, branch_block: BranchBlock, on_change: Optional[Callable] = None):
+        super().__init__(parent, text="Selection Configuration", padding=10)
+
+        self.branch_block = branch_block
+        self.on_change = on_change
+        self._suppress_callbacks = False
+
+        # Configure column weights so widgets expand to fill width
+        self.columnconfigure(1, weight=1)
+
+        # Selection Method
+        ttk.Label(self, text="Method:").grid(row=0, column=0, sticky=tk.W, pady=5)
+
+        self.method_var = tk.StringVar(value=branch_block.selection.method)
+        method_combo = ttk.Combobox(
+            self, textvariable=self.method_var,
+            values=SelectionConfig.METHODS,
+            state='readonly',
+            width=15
+        )
+        method_combo.grid(row=0, column=1, sticky=tk.W, pady=5, padx=(5, 0))
+        method_combo.bind('<<ComboboxSelected>>', lambda e: self._on_property_change())
+
+        # Method help text
+        self.method_help_label = ttk.Label(
+            self, text=self._get_method_help(),
+            font=('Arial', 8, 'italic'), foreground='gray'
+        )
+        self.method_help_label.grid(row=1, column=0, columnspan=2, sticky=tk.W, pady=(0, 5))
+
+        # Total Runs
+        ttk.Label(self, text="Total Runs:").grid(row=2, column=0, sticky=tk.W, pady=5)
+
+        runs_frame = ttk.Frame(self)
+        runs_frame.grid(row=2, column=1, sticky=tk.EW, pady=5, padx=(5, 0))
+
+        self.runs_var = tk.StringVar(
+            value=str(branch_block.total_runs) if branch_block.total_runs > 0 else ""
+        )
+        runs_entry = ttk.Entry(runs_frame, textvariable=self.runs_var, width=10)
+        runs_entry.pack(side=tk.LEFT, padx=(0, 5))
+        self.runs_var.trace_add('write', lambda *args: self._on_property_change())
+
+        ttk.Label(runs_frame, text="(0 = auto from trial lists)", font=('Arial', 8)).pack(side=tk.LEFT)
+
+        # Effective runs display
+        ttk.Label(self, text="Effective Runs:").grid(row=3, column=0, sticky=tk.W, pady=5)
+        self.effective_runs_label = ttk.Label(
+            self, text=str(branch_block.get_effective_runs()),
+            font=('Arial', 9, 'bold')
+        )
+        self.effective_runs_label.grid(row=3, column=1, sticky=tk.W, pady=5, padx=(5, 0))
+
+        # Distribution preview
+        ttk.Separator(self, orient=tk.HORIZONTAL).grid(row=4, column=0, columnspan=2, sticky=tk.EW, pady=10)
+        ttk.Label(self, text="Distribution Preview:", font=('Arial', 9, 'bold')).grid(
+            row=5, column=0, columnspan=2, sticky=tk.W, pady=(0, 5)
+        )
+
+        self.distribution_text = tk.Text(self, height=4, width=40, font=('Consolas', 9), state='disabled')
+        self.distribution_text.grid(row=6, column=0, columnspan=2, sticky=tk.EW, pady=5)
+        self._update_distribution_preview()
+
+        # Schedule preview button
+        ttk.Button(
+            self, text="Preview Full Schedule...",
+            command=self._show_schedule_preview
+        ).grid(row=7, column=0, columnspan=2, pady=(10, 5))
+
+    def _show_schedule_preview(self):
+        """Show schedule preview in a simple Toplevel window."""
+        preview = tk.Toplevel(self)
+        preview.title(f"Schedule: {self.branch_block.name}")
+        preview.geometry("500x400")
+        preview.transient(self.winfo_toplevel())
+
+        # Header frame
+        header_frame = ttk.Frame(preview)
+        header_frame.pack(fill=tk.X, padx=10, pady=10)
+
+        ttk.Label(
+            header_frame,
+            text=f"Run schedule for '{self.branch_block.name}'",
+            font=('Arial', 10, 'bold')
+        ).pack(side=tk.LEFT)
+
+        effective_runs = self.branch_block.get_effective_runs()
+        ttk.Label(
+            header_frame,
+            text=f"({effective_runs} total runs)",
+            font=('Arial', 9)
+        ).pack(side=tk.LEFT, padx=(10, 0))
+
+        # Treeview with schedule
+        tree_frame = ttk.Frame(preview)
+        tree_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+
+        columns = ('run', 'variant')
+        tree = ttk.Treeview(tree_frame, columns=columns, show='headings', height=15)
+        tree.heading('run', text='Run #')
+        tree.heading('variant', text='Variant')
+        tree.column('run', width=80, anchor=tk.CENTER)
+        tree.column('variant', width=350)
+
+        # Add scrollbar
+        scrollbar = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=tree.yview)
+        tree.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        # Populate tree
+        self._populate_schedule_tree(tree)
+
+        # Button frame
+        button_frame = ttk.Frame(preview)
+        button_frame.pack(fill=tk.X, padx=10, pady=10)
+
+        def regenerate():
+            tree.delete(*tree.get_children())
+            self._populate_schedule_tree(tree)
+
+        ttk.Button(button_frame, text="Regenerate", command=regenerate).pack(side=tk.LEFT, padx=5)
+        ttk.Button(button_frame, text="Close", command=preview.destroy).pack(side=tk.RIGHT, padx=5)
+
+    def _populate_schedule_tree(self, tree):
+        """Populate schedule tree with run plan data."""
+        try:
+            # Generate fresh schedule (no seed for random preview)
+            run_plan = self.branch_block.prepare_execution()
+            max_display = 100  # Limit display for performance
+
+            for i, (variant_idx, trial_data) in enumerate(run_plan[:max_display]):
+                variant_name = self.branch_block.variant_blocks[variant_idx].name
+                tree.insert('', 'end', values=(i + 1, variant_name))
+
+            if len(run_plan) > max_display:
+                tree.insert('', 'end', values=('...', f'+{len(run_plan) - max_display} more runs'))
+        except Exception as e:
+            tree.insert('', 'end', values=('Error', str(e)))
+
+    def _get_method_help(self) -> str:
+        """Get help text for current method."""
+        method = self.method_var.get()
+        if method == 'sequential':
+            return "Cycles through variants in order: A, B, C, A, B, C, ..."
+        elif method == 'random':
+            return "Random selection each run (respects weights)"
+        elif method == 'balanced':
+            return "Distributes runs proportionally, then shuffles"
+        return ""
+
+    def _update_distribution_preview(self):
+        """Update the distribution preview display."""
+        self.distribution_text.config(state='normal')
+        self.distribution_text.delete('1.0', tk.END)
+
+        if not self.branch_block.variant_blocks:
+            self.distribution_text.insert(tk.END, "No variants defined")
+        else:
+            effective_runs = self.branch_block.get_effective_runs()
+            distribution = self.branch_block.selection.calculate_distribution(
+                self.branch_block.get_variant_names(),
+                effective_runs
+            )
+
+            for name, count in distribution.items():
+                weight = self.branch_block.selection.get_weight(name)
+                pct = (count / effective_runs * 100) if effective_runs > 0 else 0
+                self.distribution_text.insert(
+                    tk.END,
+                    f"  {name}: {count} runs ({pct:.1f}%) [weight={weight}]\n"
+                )
+
+        self.distribution_text.config(state='disabled')
+
+    def _on_property_change(self):
+        """Handle property change."""
+        if not self._suppress_callbacks:
+            self.apply_changes()
+            self.method_help_label.config(text=self._get_method_help())
+            self.effective_runs_label.config(text=str(self.branch_block.get_effective_runs()))
+            self._update_distribution_preview()
+            if self.on_change:
+                self.on_change()
+
+    def apply_changes(self):
+        """Apply changes to selection config."""
+        try:
+            self.branch_block.selection.method = self.method_var.get()
+
+            runs_str = self.runs_var.get().strip()
+            self.branch_block.total_runs = int(runs_str) if runs_str else 0
+        except ValueError:
+            pass  # Ignore invalid input during typing
+
+    def refresh(self):
+        """Refresh display from branch block."""
+        self._suppress_callbacks = True
+        try:
+            self.method_var.set(self.branch_block.selection.method)
+            self.runs_var.set(
+                str(self.branch_block.total_runs) if self.branch_block.total_runs > 0 else ""
+            )
+            self.method_help_label.config(text=self._get_method_help())
+            self.effective_runs_label.config(text=str(self.branch_block.get_effective_runs()))
+            self._update_distribution_preview()
+        finally:
+            self._suppress_callbacks = False
+
+
+class BranchBlockInfoEditor(ttk.LabelFrame):
+    """Editor for basic branch block properties (name, stats)."""
+
+    def __init__(self, parent, branch_block: BranchBlock, timeline=None, on_change: Optional[Callable] = None):
+        super().__init__(parent, text="Branch Block Information", padding=10)
+
+        self.branch_block = branch_block
+        self.timeline = timeline
+        self.on_change = on_change
+        self._suppress_callbacks = False
+        self._original_name = branch_block.name
+
+        # Configure column weights
+        self.columnconfigure(1, weight=1)
+
+        # Block Name
+        ttk.Label(self, text="Branch Name:").grid(row=0, column=0, sticky=tk.W, pady=5)
+        self.name_var = tk.StringVar(value=branch_block.name)
+        name_entry = ttk.Entry(self, textvariable=self.name_var)
+        name_entry.grid(row=0, column=1, sticky=tk.EW, pady=5, padx=(5, 0))
+        self.name_var.trace_add('write', lambda *args: self._on_property_change())
+
+        # Block Type indicator (read-only)
+        ttk.Label(self, text="Block Type:").grid(row=1, column=0, sticky=tk.W, pady=5)
+        ttk.Label(self, text="Branch Block (multiple variants)",
+                  font=('Arial', 9, 'italic'), foreground='#2ECC71').grid(
+            row=1, column=1, sticky=tk.W, pady=5, padx=(5, 0)
+        )
+
+        # Separator
+        ttk.Separator(self, orient=tk.HORIZONTAL).grid(row=2, column=0, columnspan=2, sticky=tk.EW, pady=10)
+
+        # Stats
+        ttk.Label(self, text="Variants:").grid(row=3, column=0, sticky=tk.W, pady=2)
+        self.variants_label = ttk.Label(self, text=str(len(branch_block.variant_blocks)), font=('Arial', 9))
+        self.variants_label.grid(row=3, column=1, sticky=tk.W, pady=2, padx=(5, 0))
+
+        ttk.Label(self, text="Total Runs:").grid(row=4, column=0, sticky=tk.W, pady=2)
+        self.runs_label = ttk.Label(self, text=str(branch_block.get_effective_runs()), font=('Arial', 9))
+        self.runs_label.grid(row=4, column=1, sticky=tk.W, pady=2, padx=(5, 0))
+
+        ttk.Label(self, text="Est. Duration:").grid(row=5, column=0, sticky=tk.W, pady=2)
+        self.duration_label = ttk.Label(self, text=self._get_duration_text(), font=('Arial', 9))
+        self.duration_label.grid(row=5, column=1, sticky=tk.W, pady=2, padx=(5, 0))
+
+    def _get_duration_text(self) -> str:
+        """Get estimated duration as formatted string."""
+        duration = self.branch_block.get_estimated_duration()
+        if duration <= 0:
+            return "Unknown"
+        minutes = int(duration // 60)
+        seconds = int(duration % 60)
+        if minutes > 0:
+            return f"{minutes}m {seconds}s"
+        return f"{seconds}s"
+
+    def _on_property_change(self):
+        """Handle property change."""
+        if not self._suppress_callbacks:
+            self.apply_changes()
+            if self.on_change:
+                self.on_change()
+
+    def apply_changes(self):
+        """Apply changes to branch block."""
+        new_name = self.name_var.get().strip()
+
+        if not new_name:
+            messagebox.showerror("Invalid Name", "Branch block name cannot be empty.")
+            self.name_var.set(self._original_name)
+            return
+
+        # Check for duplicate names
+        if self.timeline and new_name != self._original_name:
+            existing_names = {b.name for b in self.timeline.blocks if b is not self.branch_block}
+            if new_name in existing_names:
+                messagebox.showerror("Duplicate Name",
+                                     f"A block named '{new_name}' already exists.")
+                self.name_var.set(self._original_name)
+                return
+
+        self.branch_block.name = new_name
+        self._original_name = new_name
+
+    def refresh_stats(self):
+        """Refresh statistics display."""
+        self.variants_label.config(text=str(len(self.branch_block.variant_blocks)))
+        self.runs_label.config(text=str(self.branch_block.get_effective_runs()))
+        self.duration_label.config(text=self._get_duration_text())
+
+
+class VariantListWidget(ttk.LabelFrame):
+    """Widget for managing variant blocks in a branch block."""
+
+    def __init__(self, parent, branch_block: BranchBlock, on_change: Optional[Callable] = None,
+                 on_variant_select: Optional[Callable] = None, timeline=None):
+        super().__init__(parent, text="Variant Blocks", padding=10)
+
+        self.branch_block = branch_block
+        self.on_change = on_change
+        self.on_variant_select = on_variant_select
+        self.timeline = timeline  # Reference to Timeline for extract operation
+        self._selected_variant_index: Optional[int] = None
+
+        # Variant list
+        list_frame = ttk.Frame(self)
+        list_frame.pack(fill=tk.BOTH, expand=True)
+
+        scrollbar = ttk.Scrollbar(list_frame, orient=tk.VERTICAL)
+        self.variant_listbox = tk.Listbox(
+            list_frame, height=6, yscrollcommand=scrollbar.set, font=('Arial', 9)
+        )
+        scrollbar.config(command=self.variant_listbox.yview)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.variant_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        self.variant_listbox.bind('<<ListboxSelect>>', self._on_variant_select)
+        self.variant_listbox.bind('<Button-3>', self._show_context_menu)
+
+        # Buttons
+        button_frame = ttk.Frame(self)
+        button_frame.pack(fill=tk.X, pady=(5, 0))
+
+        ttk.Button(button_frame, text="+ Add Variant", command=self._add_variant, width=12).pack(
+            side=tk.LEFT, padx=(0, 5)
+        )
+        ttk.Button(button_frame, text="Remove", command=self._remove_variant, width=8).pack(
+            side=tk.LEFT, padx=2
+        )
+        ttk.Button(button_frame, text="↑ Up", command=self._move_up, width=6).pack(side=tk.LEFT, padx=2)
+        ttk.Button(button_frame, text="↓ Down", command=self._move_down, width=6).pack(side=tk.LEFT, padx=2)
+
+        # Weight editor
+        weight_frame = ttk.Frame(self)
+        weight_frame.pack(fill=tk.X, pady=(10, 0))
+
+        ttk.Label(weight_frame, text="Selected Weight:").pack(side=tk.LEFT)
+        self.weight_var = tk.StringVar(value="1.0")
+        self.weight_entry = ttk.Entry(weight_frame, textvariable=self.weight_var, width=8)
+        self.weight_entry.pack(side=tk.LEFT, padx=5)
+        ttk.Button(weight_frame, text="Apply", command=self._apply_weight, width=8).pack(side=tk.LEFT)
+
+        self._refresh_variant_list()
+
+    def _refresh_variant_list(self):
+        """Refresh the variant listbox."""
+        self.variant_listbox.delete(0, tk.END)
+
+        for i, variant in enumerate(self.branch_block.variant_blocks):
+            weight = self.branch_block.selection.get_weight(variant.name)
+            phase_count = len(variant.procedure.phases) if variant.procedure else 0
+            trial_count = len(variant.trial_list.trials) if variant.trial_list else 0
+
+            display = f"[{i+1}] {variant.name} (w={weight}, {phase_count} phases"
+            if trial_count > 0:
+                display += f", {trial_count} trials"
+            display += ")"
+
+            self.variant_listbox.insert(tk.END, display)
+
+    def _on_variant_select(self, event):
+        """Handle variant selection."""
+        selection = self.variant_listbox.curselection()
+        if selection:
+            self._selected_variant_index = selection[0]
+            variant = self.branch_block.variant_blocks[self._selected_variant_index]
+            # Update weight entry
+            weight = self.branch_block.selection.get_weight(variant.name)
+            self.weight_var.set(str(weight))
+            # Notify callback
+            if self.on_variant_select:
+                self.on_variant_select(variant)
+        else:
+            self._selected_variant_index = None
+
+    def _add_variant(self):
+        """Add a new variant."""
+        # Create new variant block
+        variant_num = len(self.branch_block.variant_blocks) + 1
+        variant = Block(name=f"Variant {variant_num}", block_type='variant')
+        variant.procedure = Procedure(f"Variant {variant_num} Procedure")
+
+        self.branch_block.add_variant(variant)
+        self._refresh_variant_list()
+
+        # Select new variant
+        new_idx = len(self.branch_block.variant_blocks) - 1
+        self.variant_listbox.selection_clear(0, tk.END)
+        self.variant_listbox.selection_set(new_idx)
+        self._on_variant_select(None)
+
+        if self.on_change:
+            self.on_change()
+
+    def _remove_variant(self):
+        """Remove selected variant."""
+        if self._selected_variant_index is None:
+            messagebox.showwarning("No Selection", "Please select a variant to remove.")
+            return
+
+        if len(self.branch_block.variant_blocks) <= 1:
+            messagebox.showwarning("Cannot Remove", "Branch block must have at least one variant.")
+            return
+
+        if not messagebox.askyesno("Confirm", "Remove selected variant?"):
+            return
+
+        self.branch_block.remove_variant(self._selected_variant_index)
+        self._refresh_variant_list()
+        self._selected_variant_index = None
+
+        if self.on_change:
+            self.on_change()
+
+    def _move_up(self):
+        """Move selected variant up."""
+        if self._selected_variant_index is None or self._selected_variant_index == 0:
+            return
+
+        idx = self._selected_variant_index
+        self.branch_block.reorder_variant(idx, idx - 1)
+        self._refresh_variant_list()
+
+        # Re-select
+        self.variant_listbox.selection_clear(0, tk.END)
+        self.variant_listbox.selection_set(idx - 1)
+        self._selected_variant_index = idx - 1
+
+        if self.on_change:
+            self.on_change()
+
+    def _move_down(self):
+        """Move selected variant down."""
+        if self._selected_variant_index is None:
+            return
+        if self._selected_variant_index >= len(self.branch_block.variant_blocks) - 1:
+            return
+
+        idx = self._selected_variant_index
+        self.branch_block.reorder_variant(idx, idx + 1)
+        self._refresh_variant_list()
+
+        # Re-select
+        self.variant_listbox.selection_clear(0, tk.END)
+        self.variant_listbox.selection_set(idx + 1)
+        self._selected_variant_index = idx + 1
+
+        if self.on_change:
+            self.on_change()
+
+    def _apply_weight(self):
+        """Apply weight to selected variant."""
+        if self._selected_variant_index is None:
+            messagebox.showwarning("No Selection", "Please select a variant.")
+            return
+
+        try:
+            weight = float(self.weight_var.get())
+            if weight <= 0:
+                raise ValueError("Weight must be positive")
+
+            variant = self.branch_block.variant_blocks[self._selected_variant_index]
+            self.branch_block.selection.set_weight(variant.name, weight)
+            self._refresh_variant_list()
+
+            if self.on_change:
+                self.on_change()
+        except ValueError as e:
+            messagebox.showerror("Invalid Weight", str(e))
+
+    def refresh(self):
+        """Refresh the variant list display."""
+        self._refresh_variant_list()
+
+    def _show_context_menu(self, event):
+        """Show right-click context menu for variants."""
+        # Select the item under the cursor
+        index = self.variant_listbox.nearest(event.y)
+        if index >= 0:
+            self.variant_listbox.selection_clear(0, tk.END)
+            self.variant_listbox.selection_set(index)
+            self._selected_variant_index = index
+
+            # Create and show context menu
+            menu = tk.Menu(self, tearoff=0)
+            menu.add_command(label="Edit Variant", command=lambda: self._edit_variant(index))
+            menu.add_separator()
+            menu.add_command(label="Duplicate Variant", command=lambda: self._duplicate_variant(index))
+
+            if self.timeline:
+                menu.add_separator()
+                menu.add_command(label="Extract to Timeline", command=self._extract_selected_variant)
+
+            menu.add_separator()
+            menu.add_command(label="Remove Variant", command=self._remove_variant)
+
+            menu.post(event.x_root, event.y_root)
+
+    def _edit_variant(self, index: int):
+        """Trigger variant selection callback to load variant in property panel."""
+        if self.on_variant_select:
+            variant = self.branch_block.variant_blocks[index]
+            self.on_variant_select(variant)
+
+    def _duplicate_variant(self, index: int):
+        """Duplicate the variant at the given index."""
+        from core.execution.block import Block
+
+        variant = self.branch_block.variant_blocks[index]
+        # Use serialization instead of deepcopy to avoid issues with unpicklable objects (locks, etc.)
+        duplicate = Block.from_dict(variant.to_dict())
+
+        # Generate unique name
+        base_name = variant.name
+        existing_names = {v.name for v in self.branch_block.variant_blocks}
+        counter = 2
+        while f"{base_name} {counter}" in existing_names:
+            counter += 1
+        duplicate.name = f"{base_name} {counter}"
+
+        self.branch_block.add_variant(duplicate, index + 1)
+        self._refresh_variant_list()
+
+        if self.on_change:
+            self.on_change()
+
+    def _extract_selected_variant(self):
+        """Extract selected variant back to timeline as standalone block."""
+        if self._selected_variant_index is None:
+            messagebox.showwarning("No Selection", "Please select a variant to extract.")
+            return
+
+        if not self.timeline:
+            messagebox.showerror("Error", "Timeline reference not available.")
+            return
+
+        if len(self.branch_block.variant_blocks) <= 1:
+            messagebox.showwarning(
+                "Cannot Extract",
+                "Cannot extract the last variant. A branch block must have at least one variant.\n\n"
+                "To remove the branch block entirely, delete it from the timeline."
+            )
+            return
+
+        idx = self._selected_variant_index
+        variant = self.branch_block.variant_blocks[idx]
+
+        if not messagebox.askyesno(
+            "Extract Variant",
+            f"Extract variant '{variant.name}' to the timeline as a standalone block?\n\n"
+            f"It will be inserted after the branch block."
+        ):
+            return
+
+        # Remove from branch block
+        self.branch_block.remove_variant(idx)
+
+        # Convert back to regular block type
+        variant.block_type = 'trial_based' if variant.trial_list else 'simple'
+
+        # Find branch block index in timeline and insert after it
+        branch_idx = next(
+            (i for i, b in enumerate(self.timeline.blocks) if b is self.branch_block),
+            len(self.timeline.blocks) - 1
+        )
+        self.timeline.blocks.insert(branch_idx + 1, variant)
+
+        self._refresh_variant_list()
+        self._selected_variant_index = None
+
+        if self.on_change:
+            self.on_change()
+
+        messagebox.showinfo(
+            "Variant Extracted",
+            f"Variant '{variant.name}' has been extracted to the timeline."
+        )

@@ -20,6 +20,77 @@ from gui.marker_widgets import MarkerBindingListWidget
 logger = logging.getLogger(__name__)
 
 
+class DisplayTargetWidget(ttk.Frame):
+    """
+    Reusable widget for selecting display_target.
+
+    Provides a single dropdown: "Show to:" with options:
+    - "Both Participants" (both)
+    - "Participant 1 Only" (p1)
+    - "Participant 2 Only" (p2)
+    """
+
+    # Mapping from display text to value
+    OPTIONS = {
+        "Both Participants": "both",
+        "Participant 1 Only": "p1",
+        "Participant 2 Only": "p2"
+    }
+
+    # Reverse mapping from value to display text
+    VALUE_TO_DISPLAY = {v: k for k, v in OPTIONS.items()}
+
+    def __init__(self, parent, initial_value: str = "both",
+                 on_change: Optional[Callable] = None, label: str = "Show to:"):
+        """
+        Initialize display target widget.
+
+        Args:
+            parent: Parent widget
+            initial_value: Initial display_target value ("both", "p1", "p2")
+            on_change: Callback when selection changes
+            label: Label text to show before dropdown
+        """
+        super().__init__(parent)
+        self.on_change = on_change
+        self._suppress_callbacks = False
+
+        # Label
+        ttk.Label(self, text=label).pack(side=tk.LEFT, padx=(0, 5))
+
+        # Convert initial value to display text
+        initial_display = self.VALUE_TO_DISPLAY.get(initial_value, "Both Participants")
+
+        # Dropdown
+        self.display_var = tk.StringVar(value=initial_display)
+        self.dropdown = ttk.Combobox(
+            self,
+            textvariable=self.display_var,
+            values=list(self.OPTIONS.keys()),
+            state='readonly',
+            width=20
+        )
+        self.dropdown.pack(side=tk.LEFT)
+        self.dropdown.bind('<<ComboboxSelected>>', self._on_selection_change)
+
+    def _on_selection_change(self, event=None):
+        """Handle selection change."""
+        if not self._suppress_callbacks and self.on_change:
+            self.on_change()
+
+    def get_value(self) -> str:
+        """Get the current display_target value ("both", "p1", or "p2")."""
+        display_text = self.display_var.get()
+        return self.OPTIONS.get(display_text, "both")
+
+    def set_value(self, value: str):
+        """Set the display_target value."""
+        self._suppress_callbacks = True
+        display_text = self.VALUE_TO_DISPLAY.get(value, "Both Participants")
+        self.display_var.set(display_text)
+        self._suppress_callbacks = False
+
+
 class PhasePropertyEditor(ttk.Frame):
     """
     Factory-based phase property editor.
@@ -167,6 +238,23 @@ class FixationPhaseEditor(ttk.LabelFrame):
         duration_spinbox.grid(row=0, column=1, sticky=tk.W, pady=5, padx=(5, 0))
         self.duration_var.trace_add('write', lambda *args: self._on_property_change())
 
+        # Observer text (shown to the non-viewer participant in turn-taking)
+        ttk.Separator(self, orient=tk.HORIZONTAL).grid(row=1, column=0, columnspan=3, sticky='ew', pady=5)
+
+        ttk.Label(self, text="Observer Text:").grid(row=2, column=0, sticky=tk.W, pady=2)
+        # Determine current observer text: prefer observer_text field,
+        # fall back to per-participant overrides for backward compatibility
+        observer_text = phase.observer_text or ""
+        self.observer_text_var = tk.StringVar(value=observer_text)
+        ttk.Entry(self, textvariable=self.observer_text_var, width=40).grid(
+            row=2, column=1, sticky=tk.W, pady=2, padx=(5, 0))
+        self.observer_text_var.trace_add('write', lambda *args: self._on_property_change())
+
+        ttk.Label(
+            self, text="Text shown to the non-viewer (leave empty for fixation cross on both)",
+            font=('Arial', 8, 'italic')
+        ).grid(row=3, column=1, sticky=tk.W, pady=(0, 5), padx=(5, 0))
+
         # Event Markers (new MarkerBinding system)
         self.marker_bindings_widget = MarkerBindingListWidget(
             self,
@@ -175,7 +263,7 @@ class FixationPhaseEditor(ttk.LabelFrame):
             on_change=self._on_property_change,
             label="LSL Event Markers"
         )
-        self.marker_bindings_widget.grid(row=1, column=0, columnspan=3, sticky='ew', pady=10)
+        self.marker_bindings_widget.grid(row=4, column=0, columnspan=3, sticky='ew', pady=10)
 
     def _on_property_change(self):
         """Handle property change."""
@@ -188,6 +276,12 @@ class FixationPhaseEditor(ttk.LabelFrame):
         """Apply changes to the phase object."""
         try:
             self.phase.duration = self.duration_var.get()
+
+            # Observer text: shown to the non-viewer in turn-taking conditions.
+            # FixationPhase.render() resolves display_target from trial data
+            # and applies observer_text to the correct participant automatically.
+            observer_text = self.observer_text_var.get().strip()
+            self.phase.observer_text = observer_text if observer_text else None
 
             # Update marker bindings from widget
             self.phase.marker_bindings = self.marker_bindings_widget.get_bindings()
@@ -205,27 +299,16 @@ class VideoPhaseEditor(ttk.LabelFrame):
         self.on_change = on_change
         self._suppress_callbacks = False
 
-        # Participant 1 Video (template variable)
-        ttk.Label(self, text="P1 Video (template):").grid(row=0, column=0, sticky=tk.W, pady=5)
-        self.p1_video_var = tk.StringVar(value=phase.participant_1_video)
-        p1_video_entry = ttk.Entry(self, textvariable=self.p1_video_var, width=30)
-        p1_video_entry.grid(row=0, column=1, sticky=tk.W, pady=5, padx=(5, 0))
-        self.p1_video_var.trace_add('write', lambda *args: self._on_property_change())
-
-        ttk.Label(self, text="Example: {video1}", font=('Arial', 8, 'italic')).grid(
-            row=0, column=2, sticky=tk.W, pady=5, padx=(5, 0)
-        )
-
-        # Participant 2 Video (template variable)
-        ttk.Label(self, text="P2 Video (template):").grid(row=1, column=0, sticky=tk.W, pady=5)
-        self.p2_video_var = tk.StringVar(value=phase.participant_2_video)
-        p2_video_entry = ttk.Entry(self, textvariable=self.p2_video_var, width=30)
-        p2_video_entry.grid(row=1, column=1, sticky=tk.W, pady=5, padx=(5, 0))
-        self.p2_video_var.trace_add('write', lambda *args: self._on_property_change())
-
-        ttk.Label(self, text="Example: {video2}", font=('Arial', 8, 'italic')).grid(
-            row=1, column=2, sticky=tk.W, pady=5, padx=(5, 0)
-        )
+        # Info label
+        ttk.Label(
+            self,
+            text=(
+                "Video is selected automatically from the trial list CSV.\n"
+                "Display target is set per variant (P1 Viewer, P2 Viewer, Joint)."
+            ),
+            font=("Arial", 9, "italic"),
+            foreground="gray"
+        ).grid(row=0, column=0, columnspan=3, sticky=tk.W, pady=(0, 10))
 
         # Auto Advance
         self.auto_advance_var = tk.BooleanVar(value=phase.auto_advance)
@@ -234,7 +317,7 @@ class VideoPhaseEditor(ttk.LabelFrame):
             variable=self.auto_advance_var,
             command=self._on_property_change
         )
-        auto_advance_check.grid(row=2, column=0, columnspan=3, sticky=tk.W, pady=5)
+        auto_advance_check.grid(row=1, column=0, columnspan=3, sticky=tk.W, pady=5)
 
         # Event Markers (new MarkerBinding system)
         self.marker_bindings_widget = MarkerBindingListWidget(
@@ -244,7 +327,7 @@ class VideoPhaseEditor(ttk.LabelFrame):
             on_change=self._on_property_change,
             label="LSL Event Markers"
         )
-        self.marker_bindings_widget.grid(row=3, column=0, columnspan=3, sticky='ew', pady=10)
+        self.marker_bindings_widget.grid(row=2, column=0, columnspan=3, sticky='ew', pady=10)
 
     def _on_property_change(self):
         """Handle property change."""
@@ -256,11 +339,7 @@ class VideoPhaseEditor(ttk.LabelFrame):
     def apply_changes(self):
         """Apply changes to the phase object."""
         try:
-            self.phase.participant_1_video = self.p1_video_var.get()
-            self.phase.participant_2_video = self.p2_video_var.get()
             self.phase.auto_advance = self.auto_advance_var.get()
-
-            # Update marker bindings from widget
             self.phase.marker_bindings = self.marker_bindings_widget.get_bindings()
         except ValueError:
             pass  # Ignore invalid values during typing
@@ -276,52 +355,64 @@ class RatingPhaseEditor(ttk.LabelFrame):
         self.on_change = on_change
         self._suppress_callbacks = False
 
-        # Question
-        ttk.Label(self, text="Question:").grid(row=0, column=0, sticky=tk.NW, pady=5)
-        self.question_text = scrolledtext.ScrolledText(self, width=40, height=3)
-        self.question_text.insert('1.0', phase.question)
-        self.question_text.grid(row=0, column=1, columnspan=2, sticky=tk.W, pady=5, padx=(5, 0))
-        self.question_text.bind('<<Modified>>', self._on_text_modified)
+        # P1 Question
+        ttk.Label(self, text="P1 Question:").grid(row=0, column=0, sticky=tk.NW, pady=5)
+        self.p1_question_text = scrolledtext.ScrolledText(self, width=40, height=3)
+        p1_q = phase.participant_1_question or phase.question or ""
+        self.p1_question_text.insert('1.0', p1_q)
+        self.p1_question_text.grid(row=0, column=1, sticky=tk.W, pady=5, padx=(5, 0))
+        self.p1_question_text.bind('<<Modified>>', self._on_p1_text_modified)
 
-        # Scale Min
-        ttk.Label(self, text="Scale Min:").grid(row=1, column=0, sticky=tk.W, pady=5)
-        self.scale_min_var = tk.IntVar(value=phase.scale_min)
-        scale_min_spinbox = ttk.Spinbox(
-            self, from_=1, to=10, increment=1,
-            textvariable=self.scale_min_var, width=10
-        )
-        scale_min_spinbox.grid(row=1, column=1, sticky=tk.W, pady=5, padx=(5, 0))
-        self.scale_min_var.trace_add('write', lambda *args: self._on_property_change())
+        # P2 Question
+        ttk.Label(self, text="P2 Question:").grid(row=1, column=0, sticky=tk.NW, pady=5)
+        self.p2_question_text = scrolledtext.ScrolledText(self, width=40, height=3)
+        p2_q = phase.participant_2_question or phase.question or ""
+        self.p2_question_text.insert('1.0', p2_q)
+        self.p2_question_text.grid(row=1, column=1, sticky=tk.W, pady=5, padx=(5, 0))
+        self.p2_question_text.bind('<<Modified>>', self._on_p2_text_modified)
 
-        # Scale Max
-        ttk.Label(self, text="Scale Max:").grid(row=2, column=0, sticky=tk.W, pady=5)
-        self.scale_max_var = tk.IntVar(value=phase.scale_max)
-        scale_max_spinbox = ttk.Spinbox(
-            self, from_=2, to=10, increment=1,
-            textvariable=self.scale_max_var, width=10
-        )
-        scale_max_spinbox.grid(row=2, column=1, sticky=tk.W, pady=5, padx=(5, 0))
-        self.scale_max_var.trace_add('write', lambda *args: self._on_property_change())
+        # Separator
+        ttk.Separator(self, orient=tk.HORIZONTAL).grid(row=2, column=0, columnspan=2, sticky='ew', pady=10)
 
-        # Timeout
-        ttk.Label(self, text="Timeout (seconds):").grid(row=3, column=0, sticky=tk.W, pady=5)
-        self.timeout_var = tk.StringVar(value=str(phase.timeout) if phase.timeout else "")
-        timeout_entry = ttk.Entry(self, textvariable=self.timeout_var, width=10)
-        timeout_entry.grid(row=3, column=1, sticky=tk.W, pady=5, padx=(5, 0))
-        self.timeout_var.trace_add('write', lambda *args: self._on_property_change())
+        # P1 Rating Keys
+        ttk.Label(self, text="P1 Rating Keys:").grid(row=3, column=0, sticky=tk.W, pady=5)
+        self.p1_keys_var = tk.StringVar(value=phase.p1_keys)
+        ttk.Entry(self, textvariable=self.p1_keys_var, width=20).grid(
+            row=3, column=1, sticky=tk.W, pady=5, padx=(5, 0))
+        self.p1_keys_var.trace_add('write', lambda *args: self._on_property_change())
 
-        ttk.Label(self, text="(empty = wait indefinitely)", font=('Arial', 8, 'italic')).grid(
-            row=3, column=2, sticky=tk.W, pady=5, padx=(5, 0)
-        )
+        # P2 Rating Keys
+        ttk.Label(self, text="P2 Rating Keys:").grid(row=4, column=0, sticky=tk.W, pady=5)
+        self.p2_keys_var = tk.StringVar(value=phase.p2_keys)
+        ttk.Entry(self, textvariable=self.p2_keys_var, width=20).grid(
+            row=4, column=1, sticky=tk.W, pady=5, padx=(5, 0))
+        self.p2_keys_var.trace_add('write', lambda *args: self._on_property_change())
 
-        # Scale Labels (simplified - just show info)
-        ttk.Label(self, text="Scale Labels:").grid(row=4, column=0, sticky=tk.W, pady=5)
-        labels_text = ', '.join(phase.scale_labels) if phase.scale_labels else "None"
-        ttk.Label(self, text=labels_text, font=('Arial', 9)).grid(
-            row=4, column=1, columnspan=2, sticky=tk.W, pady=5, padx=(5, 0)
-        )
+        ttk.Label(
+            self, text="One key per scale point, maps to values 1, 2, 3...",
+            font=('Arial', 8, 'italic')
+        ).grid(row=5, column=1, sticky=tk.W, pady=(0, 5), padx=(5, 0))
 
-        # Event Markers (new MarkerBinding system)
+        # Separator
+        ttk.Separator(self, orient=tk.HORIZONTAL).grid(row=6, column=0, columnspan=2, sticky='ew', pady=5)
+
+        # Observer Beep
+        self.observer_beep_var = tk.BooleanVar(value=phase.observer_beep)
+        ttk.Checkbutton(
+            self, text="Play audio beep for observer at rating start",
+            variable=self.observer_beep_var,
+            command=self._on_property_change
+        ).grid(row=7, column=0, columnspan=2, sticky=tk.W, pady=2)
+
+        ttk.Label(
+            self, text="Turn-taking only: plays a 0.5s tone on the observer's audio device",
+            font=('Arial', 8, 'italic')
+        ).grid(row=8, column=0, columnspan=2, sticky=tk.W, pady=(0, 5), padx=(5, 0))
+
+        # Separator
+        ttk.Separator(self, orient=tk.HORIZONTAL).grid(row=9, column=0, columnspan=2, sticky='ew', pady=5)
+
+        # Event Markers
         self.marker_bindings_widget = MarkerBindingListWidget(
             self,
             bindings=phase.marker_bindings,
@@ -329,12 +420,18 @@ class RatingPhaseEditor(ttk.LabelFrame):
             on_change=self._on_property_change,
             label="LSL Event Markers"
         )
-        self.marker_bindings_widget.grid(row=5, column=0, columnspan=3, sticky='ew', pady=10)
+        self.marker_bindings_widget.grid(row=10, column=0, columnspan=2, sticky='ew', pady=5)
 
-    def _on_text_modified(self, event=None):
-        """Handle text widget modification."""
-        if self.question_text.edit_modified():
-            self.question_text.edit_modified(False)
+    def _on_p1_text_modified(self, event=None):
+        """Handle P1 question text modification."""
+        if self.p1_question_text.edit_modified():
+            self.p1_question_text.edit_modified(False)
+            self._on_property_change()
+
+    def _on_p2_text_modified(self, event=None):
+        """Handle P2 question text modification."""
+        if self.p2_question_text.edit_modified():
+            self.p2_question_text.edit_modified(False)
             self._on_property_change()
 
     def _on_property_change(self):
@@ -347,16 +444,34 @@ class RatingPhaseEditor(ttk.LabelFrame):
     def apply_changes(self):
         """Apply changes to the phase object."""
         try:
-            self.phase.question = self.question_text.get('1.0', 'end-1c')
-            self.phase.scale_min = self.scale_min_var.get()
-            self.phase.scale_max = self.scale_max_var.get()
+            # Questions
+            p1_q = self.p1_question_text.get('1.0', 'end-1c').strip()
+            p2_q = self.p2_question_text.get('1.0', 'end-1c').strip()
+            self.phase.participant_1_question = p1_q if p1_q else None
+            self.phase.participant_2_question = p2_q if p2_q else None
+            self.phase.question = p1_q or p2_q or self.phase.question
 
-            # Parse timeout
-            timeout_str = self.timeout_var.get().strip()
-            self.phase.timeout = float(timeout_str) if timeout_str else None
+            # Key bindings
+            p1_keys = self.p1_keys_var.get().strip()
+            p2_keys = self.p2_keys_var.get().strip()
+            if p1_keys:
+                self.phase.p1_keys = p1_keys
+            if p2_keys:
+                self.phase.p2_keys = p2_keys
 
-            # Update marker bindings from widget
+            # Auto-derive scale from key length
+            self.phase.scale_min = 1
+            self.phase.scale_max = max(len(self.phase.p1_keys), len(self.phase.p2_keys))
+
+            # Observer beep
+            self.phase.observer_beep = self.observer_beep_var.get()
+
+            # Marker bindings
             self.phase.marker_bindings = self.marker_bindings_widget.get_bindings()
+
+            # Always both participants, no timeout
+            self.phase.display_target = "both"
+            self.phase.timeout = None
         except ValueError:
             pass  # Ignore invalid values during typing
 
@@ -371,68 +486,65 @@ class InstructionPhaseEditor(ttk.LabelFrame):
         self.on_change = on_change
         self._suppress_callbacks = False
 
-        # Instruction Text
-        ttk.Label(self, text="Instruction Text:").grid(row=0, column=0, sticky=tk.NW, pady=5)
-        self.text_widget = scrolledtext.ScrolledText(self, width=50, height=6)
-        self.text_widget.insert('1.0', phase.text)
-        self.text_widget.grid(row=0, column=1, columnspan=2, sticky=tk.W, pady=5, padx=(5, 0))
-        self.text_widget.bind('<<Modified>>', self._on_text_modified)
+        # P1 Instructions
+        ttk.Label(self, text="P1 Instructions:").grid(row=0, column=0, sticky=tk.NW, pady=5)
+        self.p1_text_widget = scrolledtext.ScrolledText(self, width=50, height=4)
+        p1_text = phase.participant_1_text or phase.text or ""
+        self.p1_text_widget.insert('1.0', p1_text)
+        self.p1_text_widget.grid(row=0, column=1, sticky=tk.W, pady=5, padx=(5, 0))
+        self.p1_text_widget.bind('<<Modified>>', self._on_p1_text_modified)
 
-        # Font Size
-        ttk.Label(self, text="Font Size:").grid(row=1, column=0, sticky=tk.W, pady=5)
-        self.font_size_var = tk.IntVar(value=phase.font_size)
-        font_size_spinbox = ttk.Spinbox(
-            self, from_=10, to=72, increment=2,
-            textvariable=self.font_size_var, width=10
-        )
-        font_size_spinbox.grid(row=1, column=1, sticky=tk.W, pady=5, padx=(5, 0))
-        self.font_size_var.trace_add('write', lambda *args: self._on_property_change())
+        # P2 Instructions
+        ttk.Label(self, text="P2 Instructions:").grid(row=1, column=0, sticky=tk.NW, pady=5)
+        self.p2_text_widget = scrolledtext.ScrolledText(self, width=50, height=4)
+        p2_text = phase.participant_2_text or phase.text or ""
+        self.p2_text_widget.insert('1.0', p2_text)
+        self.p2_text_widget.grid(row=1, column=1, sticky=tk.W, pady=5, padx=(5, 0))
+        self.p2_text_widget.bind('<<Modified>>', self._on_p2_text_modified)
 
-        # Wait for Key
-        self.wait_for_key_var = tk.BooleanVar(value=phase.wait_for_key)
-        wait_check = ttk.Checkbutton(
-            self, text="Wait for key press to continue",
-            variable=self.wait_for_key_var,
-            command=self._on_property_change
-        )
-        wait_check.grid(row=2, column=0, columnspan=3, sticky=tk.W, pady=5)
+        # Separator
+        ttk.Separator(self, orient=tk.HORIZONTAL).grid(row=2, column=0, columnspan=2, sticky='ew', pady=10)
 
-        # Continue Key
-        ttk.Label(self, text="Continue Key:").grid(row=3, column=0, sticky=tk.W, pady=5)
-        self.continue_key_var = tk.StringVar(value=phase.continue_key or "")
-        continue_key_entry = ttk.Entry(self, textvariable=self.continue_key_var, width=15)
-        continue_key_entry.grid(row=3, column=1, sticky=tk.W, pady=5, padx=(5, 0))
-        self.continue_key_var.trace_add('write', lambda *args: self._on_property_change())
+        # Continue Keys
+        ttk.Label(self, text="P1 Continue Key:").grid(row=3, column=0, sticky=tk.W, pady=2)
+        self.p1_key_var = tk.StringVar(value=phase.p1_continue_key or "space")
+        ttk.Entry(self, textvariable=self.p1_key_var, width=20).grid(
+            row=3, column=1, sticky=tk.W, pady=2, padx=(5, 0))
+        self.p1_key_var.trace_add('write', lambda *args: self._on_property_change())
 
-        ttk.Label(self, text="(e.g., space, enter)", font=('Arial', 8, 'italic')).grid(
-            row=3, column=2, sticky=tk.W, pady=5, padx=(5, 0)
-        )
+        ttk.Label(self, text="P2 Continue Key:").grid(row=4, column=0, sticky=tk.W, pady=2)
+        self.p2_key_var = tk.StringVar(value=phase.p2_continue_key or "space")
+        ttk.Entry(self, textvariable=self.p2_key_var, width=20).grid(
+            row=4, column=1, sticky=tk.W, pady=2, padx=(5, 0))
+        self.p2_key_var.trace_add('write', lambda *args: self._on_property_change())
 
-        # Duration
-        ttk.Label(self, text="Duration (seconds):").grid(row=4, column=0, sticky=tk.W, pady=5)
-        self.duration_var = tk.StringVar(value=str(phase.duration) if phase.duration else "")
-        duration_entry = ttk.Entry(self, textvariable=self.duration_var, width=15)
-        duration_entry.grid(row=4, column=1, sticky=tk.W, pady=5, padx=(5, 0))
-        self.duration_var.trace_add('write', lambda *args: self._on_property_change())
+        ttk.Label(
+            self, text="e.g. 'space', 'enter' — with keyboard routing, both can use the same key",
+            font=('Arial', 8, 'italic')
+        ).grid(row=5, column=1, sticky=tk.W, pady=(0, 5), padx=(5, 0))
 
-        ttk.Label(self, text="(empty = wait for key)", font=('Arial', 8, 'italic')).grid(
-            row=4, column=2, sticky=tk.W, pady=5, padx=(5, 0)
-        )
+        # Waiting Message
+        ttk.Label(self, text="Waiting Message:").grid(row=6, column=0, sticky=tk.W, pady=2)
+        self.waiting_msg_var = tk.StringVar(value=phase.waiting_message or "(waiting for partner)")
+        ttk.Entry(self, textvariable=self.waiting_msg_var, width=40).grid(
+            row=6, column=1, sticky=tk.W, pady=2, padx=(5, 0))
+        self.waiting_msg_var.trace_add('write', lambda *args: self._on_property_change())
 
-        # Event Markers (new MarkerBinding system)
-        self.marker_bindings_widget = MarkerBindingListWidget(
-            self,
-            bindings=phase.marker_bindings,
-            available_events=['phase_start', 'phase_end'],
-            on_change=self._on_property_change,
-            label="LSL Event Markers"
-        )
-        self.marker_bindings_widget.grid(row=5, column=0, columnspan=3, sticky='ew', pady=10)
+        ttk.Label(
+            self, text="Shown after a participant presses their key while waiting for the other",
+            font=('Arial', 8, 'italic')
+        ).grid(row=7, column=0, columnspan=2, sticky=tk.W, pady=(0, 5), padx=(5, 0))
 
-    def _on_text_modified(self, event=None):
-        """Handle text widget modification."""
-        if self.text_widget.edit_modified():
-            self.text_widget.edit_modified(False)
+    def _on_p1_text_modified(self, event=None):
+        """Handle P1 text modification."""
+        if self.p1_text_widget.edit_modified():
+            self.p1_text_widget.edit_modified(False)
+            self._on_property_change()
+
+    def _on_p2_text_modified(self, event=None):
+        """Handle P2 text modification."""
+        if self.p2_text_widget.edit_modified():
+            self.p2_text_widget.edit_modified(False)
             self._on_property_change()
 
     def _on_property_change(self):
@@ -445,20 +557,30 @@ class InstructionPhaseEditor(ttk.LabelFrame):
     def apply_changes(self):
         """Apply changes to the phase object."""
         try:
-            self.phase.text = self.text_widget.get('1.0', 'end-1c')
-            self.phase.font_size = self.font_size_var.get()
-            self.phase.wait_for_key = self.wait_for_key_var.get()
+            # Per-participant text
+            p1_text = self.p1_text_widget.get('1.0', 'end-1c').strip()
+            p2_text = self.p2_text_widget.get('1.0', 'end-1c').strip()
+            self.phase.participant_1_text = p1_text if p1_text else None
+            self.phase.participant_2_text = p2_text if p2_text else None
+            self.phase.text = p1_text or p2_text or self.phase.text
 
-            # Parse continue key
-            continue_key_str = self.continue_key_var.get().strip()
-            self.phase.continue_key = continue_key_str if continue_key_str else None
+            # Per-participant continue keys (always dual-acknowledge)
+            p1_key = self.p1_key_var.get().strip()
+            p2_key = self.p2_key_var.get().strip()
+            self.phase.p1_continue_key = p1_key if p1_key else "space"
+            self.phase.p2_continue_key = p2_key if p2_key else "space"
 
-            # Parse duration
-            duration_str = self.duration_var.get().strip()
-            self.phase.duration = float(duration_str) if duration_str else None
+            # Legacy continue_key is no longer user-editable; clear it
+            # so the runtime always takes the dual-acknowledge path
+            self.phase.continue_key = None
 
-            # Update marker bindings from widget
-            self.phase.marker_bindings = self.marker_bindings_widget.get_bindings()
+            waiting_msg = self.waiting_msg_var.get().strip()
+            self.phase.waiting_message = waiting_msg if waiting_msg else None
+
+            # Always wait for key, always both, no duration
+            self.phase.wait_for_key = True
+            self.phase.duration = None
+            self.phase.display_target = "both"
         except ValueError:
             pass  # Ignore invalid values during typing
 

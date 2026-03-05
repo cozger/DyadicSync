@@ -308,11 +308,9 @@ class ExperimentConfigAdapter:
             )
         )
 
-        # Add video phase (uses template variables)
+        # Add video phase (auto-selects from CSV VideoPath column)
         video_phase = VideoPhase(
-            name="Video Playback",
-            participant_1_video="{video1}",
-            participant_2_video="{video2}"
+            name="Video Playback"
         )
 
         # Add marker bindings for video events

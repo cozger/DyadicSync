@@ -33,7 +33,7 @@ class FixationConfigDialog(FormDialog):
             phase: FixationPhase to configure
         """
         self.phase = phase
-        super().__init__(parent, "Configure Fixation Phase", width=450, height=300)
+        super().__init__(parent, "Configure Fixation Phase", width=500, height=400)
 
     def _build_content(self, content_frame: ttk.Frame):
         """Build dialog content."""
@@ -47,6 +47,20 @@ class FixationConfigDialog(FormDialog):
             show_formatted=True
         )
         self.duration_picker.pack(fill=tk.X, pady=10)
+
+        # Observer text (shown to non-viewer in turn-taking)
+        observer_frame = ttk.LabelFrame(content_frame, text="Observer Text", padding=10)
+        observer_frame.pack(fill=tk.X, pady=10)
+
+        self.observer_text_var = tk.StringVar(value=self.phase.observer_text or "")
+        ttk.Entry(observer_frame, textvariable=self.observer_text_var, width=40).pack(fill=tk.X, pady=2)
+
+        ttk.Label(
+            observer_frame,
+            text="Text shown to the non-viewer (leave empty for cross on both screens)",
+            font=("Arial", 8),
+            foreground="gray"
+        ).pack(anchor=tk.W, pady=(5, 0))
 
         # LSL Event Markers (new MarkerBinding system)
         lsl_frame = ttk.LabelFrame(content_frame, text="LSL Event Markers", padding=10)
@@ -79,6 +93,9 @@ class FixationConfigDialog(FormDialog):
         # Update phase object directly with marker bindings
         self.phase.marker_bindings = self.marker_bindings_widget.get_bindings()
 
+        observer_text = self.observer_text_var.get().strip()
+
         return {
-            'duration': self.duration_picker.get()
+            'duration': self.duration_picker.get(),
+            'observer_text': observer_text if observer_text else None
         }

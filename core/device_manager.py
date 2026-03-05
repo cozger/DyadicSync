@@ -5,10 +5,13 @@ Manages all hardware devices (displays, audio, input).
 """
 
 from typing import List, Dict, Any, Optional
+import logging
 import pyglet
 import sounddevice as sd
 import numpy as np
 from .device_scanner import DeviceScanner, DisplayInfo, AudioDeviceInfo
+
+logger = logging.getLogger(__name__)
 
 
 class DeviceManager:
@@ -38,6 +41,14 @@ class DeviceManager:
         self.window1: Optional[pyglet.window.Window] = None
         self.window2: Optional[pyglet.window.Window] = None
 
+        # Windowed debug mode (small windows on control monitor instead of fullscreen)
+        self.windowed_mode: bool = False
+
+        # Keyboard routing (optional)
+        self.keyboard_device_p1: Optional[str] = None  # Device path string
+        self.keyboard_device_p2: Optional[str] = None  # Device path string
+        self.keyboard_router = None  # KeyboardRouter instance (created in initialize())
+
         # Scanner instance
         self._scanner = DeviceScanner()
 
@@ -53,6 +64,12 @@ class DeviceManager:
         self.display_p2 = config.get('display_p2', self.display_p2)
         self.audio_device_p1 = config.get('audio_device_p1', self.audio_device_p1)
         self.audio_device_p2 = config.get('audio_device_p2', self.audio_device_p2)
+
+        # Keyboard device paths (optional)
+        if config.get('keyboard_device_p1'):
+            self.keyboard_device_p1 = config['keyboard_device_p1']
+        if config.get('keyboard_device_p2'):
+            self.keyboard_device_p2 = config['keyboard_device_p2']
 
     def initialize(self):
         """
@@ -76,6 +93,31 @@ class DeviceManager:
         print(f"[DeviceManager] Found {len(screens)} screens")
         for i, screen in enumerate(screens):
             print(f"[DeviceManager]   Screen {i}: {screen.width}x{screen.height}")
+
+        # Windowed debug mode: small side-by-side windows on screen 0
+        if self.windowed_mode:
+            print(f"[DeviceManager] WINDOWED MODE: Creating debug windows on screen 0")
+
+            debug_width = 800
+            debug_height = 600
+
+            self.window1 = pyglet.window.Window(
+                width=debug_width, height=debug_height,
+                caption="P1 Preview", screen=screens[0]
+            )
+            self.window1.set_exclusive_keyboard(False)
+            self.window1.set_location(screens[0].x + 50, screens[0].y + 100)
+
+            self.window2 = pyglet.window.Window(
+                width=debug_width, height=debug_height,
+                caption="P2 Preview", screen=screens[0]
+            )
+            self.window2.set_exclusive_keyboard(False)
+            self.window2.set_location(screens[0].x + 50 + debug_width + 20, screens[0].y + 100)
+
+            print(f"[DeviceManager] Debug windows created: {debug_width}x{debug_height} side-by-side")
+            self._initialize_keyboard_router()
+            return
 
         # Create fullscreen windows for both participants
         # Note: set_exclusive_keyboard(False) is critical for multi-window setups
@@ -101,6 +143,7 @@ class DeviceManager:
             print(f"[DeviceManager] Window 2 created successfully")
 
             print(f"[DeviceManager] Both windows created successfully on displays {self.display_p1} and {self.display_p2}")
+            self._initialize_keyboard_router()
 
         except Exception as e:
             print(f"[DeviceManager] ERROR creating fullscreen windows: {e}")
@@ -123,6 +166,7 @@ class DeviceManager:
                 self.window2.set_exclusive_keyboard(False)
 
                 print(f"[DeviceManager] Created windowed mode windows successfully")
+                self._initialize_keyboard_router()
 
             except Exception as e2:
                 raise RuntimeError(
@@ -138,8 +182,34 @@ class DeviceManager:
                     f"- Pyglet version is compatible"
                 )
 
+    def _initialize_keyboard_router(self):
+        """Initialize keyboard router if both device paths are configured."""
+        if self.keyboard_device_p1 and self.keyboard_device_p2:
+            try:
+                from .input.keyboard_router import KeyboardRouter
+                self.keyboard_router = KeyboardRouter(
+                    p1_device_path=self.keyboard_device_p1,
+                    p2_device_path=self.keyboard_device_p2
+                )
+                self.keyboard_router.start()
+                print(f"[DeviceManager] Keyboard router started (per-keyboard input routing enabled)")
+            except Exception as e:
+                logger.warning(f"Failed to start keyboard router: {e}")
+                print(f"[DeviceManager] WARNING: Keyboard router failed to start: {e}")
+                print(f"[DeviceManager] WARNING: Falling back to separate key bindings")
+                self.keyboard_router = None
+        else:
+            if self.keyboard_device_p1 or self.keyboard_device_p2:
+                print(f"[DeviceManager] WARNING: Only one keyboard configured - both required for routing")
+            self.keyboard_router = None
+
     def cleanup(self):
         """Close windows and release devices."""
+        # Stop keyboard router first
+        if self.keyboard_router:
+            self.keyboard_router.stop()
+            self.keyboard_router = None
+
         if self.window1:
             self.window1.close()
             self.window1 = None
@@ -190,12 +260,13 @@ class DeviceManager:
             audio_result = self._scanner.scan_audio_devices()
             self.audio_devices = audio_result['all']
 
-        # Check displays exist
-        num_displays = len(self.displays)
-        if self.display_p1 >= num_displays:
-            errors.append(f"Display {self.display_p1} not found (only {num_displays} displays available)")
-        if self.display_p2 >= num_displays:
-            errors.append(f"Display {self.display_p2} not found (only {num_displays} displays available)")
+        # In windowed mode, skip display validation (both windows go on screen 0)
+        if not self.windowed_mode:
+            num_displays = len(self.displays)
+            if self.display_p1 >= num_displays:
+                errors.append(f"Display {self.display_p1} not found (only {num_displays} displays available)")
+            if self.display_p2 >= num_displays:
+                errors.append(f"Display {self.display_p2} not found (only {num_displays} displays available)")
 
         # Check audio devices exist (search by device index, not list position)
         audio_device_indices = [dev.index for dev in self.audio_devices]
@@ -275,12 +346,17 @@ class DeviceManager:
         Returns:
             Dictionary with device indices
         """
-        return {
+        config = {
             'display_p1': self.display_p1,
             'display_p2': self.display_p2,
             'audio_device_p1': self.audio_device_p1,
             'audio_device_p2': self.audio_device_p2
         }
+        if self.keyboard_device_p1:
+            config['keyboard_device_p1'] = self.keyboard_device_p1
+        if self.keyboard_device_p2:
+            config['keyboard_device_p2'] = self.keyboard_device_p2
+        return config
 
     def __repr__(self):
         return (

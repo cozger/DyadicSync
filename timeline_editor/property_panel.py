@@ -13,13 +13,17 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent))
 
 from core.execution.block import Block
+from core.execution.branch_block import BranchBlock
 from gui.phase_widgets import PhasePropertyEditor
 from gui.block_widgets import (
     BlockInfoEditor,
     ProcedureListWidget,
     TrialListConfigEditor,
     RandomizationConfigEditor,
-    TemplateVariableValidator
+    TemplateVariableValidator,
+    BranchBlockInfoEditor,
+    SelectionConfigEditor,
+    VariantListWidget
 )
 
 
@@ -34,6 +38,7 @@ class PropertyPanel(ttk.Frame):
     - Trial list configuration (for trial_based blocks)
     - Randomization settings (for trial_based blocks)
     - Template variable validation
+    - Branch block editing (variants, selection config)
     """
 
     def __init__(self, parent, timeline=None, on_change: Optional[callable] = None):
@@ -49,7 +54,7 @@ class PropertyPanel(ttk.Frame):
 
         self.timeline = timeline
         self.on_change = on_change
-        self._current_block: Optional[Block] = None
+        self._current_block = None  # Can be Block or BranchBlock
         self._configure_scheduled_block = False  # Flag to prevent Configure loop for block section
         self._configure_scheduled_phase = False  # Flag to prevent Configure loop for phase section
 
@@ -190,7 +195,10 @@ class PropertyPanel(ttk.Frame):
         self.trial_list_editor = TrialListConfigEditor(
             block_container,
             block=Block("Placeholder", 'trial_based'),  # Dummy block
-            on_change=self._handle_change
+            on_change=self._handle_change,
+            block_info_editor=self.block_info_editor,  # For refreshing stats after duration calc
+            on_duration_calculated=self._refresh_display_only,  # For canvas refresh after duration calc
+            timeline=self.timeline
         )
 
         # Separator
@@ -218,6 +226,49 @@ class PropertyPanel(ttk.Frame):
             relief=tk.FLAT,
             state=tk.DISABLED
         )
+
+        # === Branch Block Editors ===
+        # Branch Block Info Editor
+        self.branch_info_editor = BranchBlockInfoEditor(
+            block_container,
+            branch_block=BranchBlock("Placeholder"),  # Dummy
+            timeline=self.timeline,
+            on_change=self._handle_change
+        )
+
+        # Separator for branch block
+        self.branch_separator1 = ttk.Separator(block_container, orient=tk.HORIZONTAL)
+
+        # Variant List Widget
+        self.variant_list_widget = VariantListWidget(
+            block_container,
+            branch_block=BranchBlock("Placeholder"),  # Dummy
+            on_change=self._handle_change,
+            on_variant_select=self._on_variant_select,
+            timeline=self.timeline  # For extract operation
+        )
+
+        # Separator for branch block
+        self.branch_separator2 = ttk.Separator(block_container, orient=tk.HORIZONTAL)
+
+        # Selection Config Editor
+        self.selection_editor = SelectionConfigEditor(
+            block_container,
+            branch_block=BranchBlock("Placeholder"),  # Dummy
+            on_change=self._handle_change
+        )
+
+        # Branch block trial list (shared)
+        self.branch_separator3 = ttk.Separator(block_container, orient=tk.HORIZONTAL)
+        self.branch_trial_list_editor = TrialListConfigEditor(
+            block_container,
+            block=Block("Placeholder", 'trial_based'),  # Dummy
+            on_change=self._handle_change,
+            timeline=self.timeline
+        )
+
+        # Currently selected variant (for phase editing)
+        self._selected_variant: Optional[Block] = None
 
     def _on_configure_block_section(self, event):
         """Handle configure event for block section (debounced)."""
@@ -330,29 +381,88 @@ class PropertyPanel(ttk.Frame):
 
     def _handle_change(self):
         """Handle property change."""
+        # Sync branch block trial list from wrapper if applicable
+        if (self._current_block and isinstance(self._current_block, BranchBlock)
+                and hasattr(self, '_branch_trial_wrapper')):
+            self._current_block.trial_list = self._branch_trial_wrapper.trial_list
+
         # Refresh validation
         if self._current_block:
-            self._update_validation()
-
-            # Invalidate duration cache when properties change
-            # (will be recalculated next time CSV is loaded)
-            self._current_block.invalidate_duration_cache()
-
-            # Refresh stats in block info editor
-            self.block_info_editor.refresh_stats()
+            if isinstance(self._current_block, BranchBlock):
+                # Refresh branch block stats
+                self.branch_info_editor.refresh_stats()
+                self.selection_editor.refresh()
+            else:
+                self._update_validation()
+                # Refresh stats in block info editor
+                self.block_info_editor.refresh_stats()
 
         if self.on_change:
             self.on_change()
 
-    def load_block(self, block: Block):
+    def _refresh_display_only(self):
+        """
+        Refresh the display without invalidating the duration cache.
+
+        Used after duration calculation to update the timeline canvas
+        without triggering another cache invalidation.
+        """
+        if self.on_change:
+            self.on_change()
+
+    def _on_variant_select(self, variant: Block):
+        """Handle variant selection in branch block - load variant's procedure for editing."""
+        self._selected_variant = variant
+        if variant and variant.procedure:
+            # Update procedure widget to show variant's procedure
+            self.procedure_widget.block = variant
+            self.procedure_widget.refresh()
+            # Clear phase selection
+            self.phase_editor.load_phase(None)
+
+    def load_block(self, block):
         """
         Load a block for editing.
 
         Args:
-            block: Block object to edit
+            block: Block or BranchBlock object to edit
         """
         self._current_block = block
 
+        # Clear any previous state
+        self._hide_all_editors()
+
+        # Handle BranchBlock
+        if isinstance(block, BranchBlock):
+            self._load_branch_block(block)
+            return
+
+        # Handle regular Block
+        self._load_regular_block(block)
+
+    def _hide_all_editors(self):
+        """Hide all editor widgets."""
+        # Regular block editors
+        self.block_info_editor.pack_forget()
+        self.separator1.pack_forget()
+        self.procedure_widget.pack_forget()
+        self.separator2.pack_forget()
+        self.trial_list_editor.pack_forget()
+        self.separator3.pack_forget()
+        self.randomization_editor.pack_forget()
+        self.validation_frame.pack_forget()
+
+        # Branch block editors
+        self.branch_info_editor.pack_forget()
+        self.branch_separator1.pack_forget()
+        self.variant_list_widget.pack_forget()
+        self.branch_separator2.pack_forget()
+        self.selection_editor.pack_forget()
+        self.branch_separator3.pack_forget()
+        self.branch_trial_list_editor.pack_forget()
+
+    def _load_regular_block(self, block: Block):
+        """Load a regular Block for editing."""
         # Calculate duration if block has CSV trial list and duration not cached
         if (block.trial_list and block.trial_list.source and
             block.trial_list.source_type == 'csv' and
@@ -367,7 +477,7 @@ class PropertyPanel(ttk.Frame):
         self._show_editor()
 
         # Update block reference in all editors
-        self.block_info_editor.load_block(block)  # Use load_block method for proper initialization
+        self.block_info_editor.load_block(block)
         self.procedure_widget.block = block
         self.trial_list_editor.block = block
         self.randomization_editor.block = block
@@ -389,20 +499,80 @@ class PropertyPanel(ttk.Frame):
             self.separator3.pack(fill=tk.X, padx=10, pady=10)
             self.randomization_editor.pack(fill=tk.X, padx=10, pady=5)
             self.randomization_editor.refresh()
-        else:
-            self.separator2.pack_forget()
-            self.trial_list_editor.pack_forget()
-            self.separator3.pack_forget()
-            self.randomization_editor.pack_forget()
 
         # Validation frame
         self._update_validation()
 
-        # Load phase editor in right pane (initially empty, will populate when phase is selected)
+        # Load phase editor in right pane
         self.phase_editor.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
         self.phase_editor.load_phase(None)
 
-        # Force update scroll regions for both panes
+        # Force update scroll regions
+        self.after(50, self._update_block_scroll_region)
+        self.after(50, self._update_phase_scroll_region)
+
+    def _load_branch_block(self, branch_block: BranchBlock):
+        """Load a BranchBlock for editing."""
+        # Update title
+        self.title_label.config(text=f"Branch Block: {branch_block.name}")
+
+        # Show editor
+        self._show_editor()
+
+        # Update branch block reference in editors
+        self.branch_info_editor.branch_block = branch_block
+        self.branch_info_editor._original_name = branch_block.name
+        self.branch_info_editor.name_var.set(branch_block.name)
+        self.branch_info_editor.refresh_stats()
+
+        self.variant_list_widget.branch_block = branch_block
+        self.variant_list_widget.timeline = self.timeline  # Update timeline reference for extract operation
+        self.variant_list_widget.refresh()
+
+        self.selection_editor.branch_block = branch_block
+        self.selection_editor.refresh()
+
+        # Pack branch block editors
+        self.branch_info_editor.pack(fill=tk.X, padx=10, pady=5)
+
+        self.branch_separator1.pack(fill=tk.X, padx=10, pady=10)
+        self.variant_list_widget.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+
+        self.branch_separator2.pack(fill=tk.X, padx=10, pady=10)
+        self.selection_editor.pack(fill=tk.X, padx=10, pady=5)
+
+        # Shared trial list - always show so user can load a CSV
+        # Create a wrapper block that syncs trial_list with the branch block
+        self._branch_trial_wrapper = Block("Shared Trial List", 'trial_based')
+        self._branch_trial_wrapper.trial_list = branch_block.trial_list
+        self._branch_trial_wrapper_branch = branch_block  # Reference for syncing back
+        self.branch_trial_list_editor.block = self._branch_trial_wrapper
+        self.branch_separator3.pack(fill=tk.X, padx=10, pady=10)
+        self.branch_trial_list_editor.pack(fill=tk.X, padx=10, pady=5)
+        self.branch_trial_list_editor.refresh()
+
+        # Set up procedure widget for variant editing
+        # Initially show first variant's procedure if available
+        self._selected_variant = None
+        if branch_block.variant_blocks:
+            first_variant = branch_block.variant_blocks[0]
+            self._selected_variant = first_variant
+            self.procedure_widget.block = first_variant
+            self.separator1.pack(fill=tk.X, padx=10, pady=10)
+            self.procedure_widget.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+            self.procedure_widget.refresh()
+            # Programmatically select first variant in listbox for visual feedback
+            self.variant_list_widget.variant_listbox.selection_set(0)
+            self.variant_list_widget._selected_variant_index = 0
+
+        # Phase editor in right pane
+        self.phase_editor.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        self.phase_editor.load_phase(None)
+
+        # Update validation icon (green for branch blocks)
+        self.validation_label.config(text="⎇", foreground='#2ECC71')
+
+        # Force update scroll regions
         self.after(50, self._update_block_scroll_region)
         self.after(50, self._update_phase_scroll_region)
 
@@ -436,19 +606,13 @@ class PropertyPanel(ttk.Frame):
     def clear(self):
         """Clear the property panel."""
         self._current_block = None
+        self._selected_variant = None
         self.title_label.config(text="Block Properties")
         self.validation_label.config(text="")
 
         # Hide all editors
-        self.block_info_editor.pack_forget()
-        self.separator1.pack_forget()
-        self.procedure_widget.pack_forget()
+        self._hide_all_editors()
         self.phase_editor.pack_forget()
-        self.separator2.pack_forget()
-        self.trial_list_editor.pack_forget()
-        self.separator3.pack_forget()
-        self.randomization_editor.pack_forget()
-        self.validation_frame.pack_forget()
 
         self._show_no_selection()
 

@@ -372,6 +372,34 @@ class LabRecorderController:
             print("[LabRecorder] ERROR: Failed to send stop command")
         return success
 
+    def check_connection_alive(self) -> bool:
+        """
+        Check if TCP connection to LabRecorder is still alive.
+
+        Uses a non-destructive socket peek to detect if the remote end
+        has closed the connection (LabRecorder crashed, stopped, etc.).
+
+        Returns:
+            True if connection appears alive, False if dead or no socket.
+        """
+        if not self.socket:
+            return False
+        try:
+            self.socket.setblocking(False)
+            try:
+                data = self.socket.recv(1, socket.MSG_PEEK)
+                if data == b'':
+                    return False  # Connection closed by remote
+                return True
+            except BlockingIOError:
+                return True  # No data available = connection still alive
+            except (socket.error, OSError):
+                return False
+            finally:
+                self.socket.setblocking(True)
+        except Exception:
+            return False
+
     def close(self):
         """
         Close connection to LabRecorder.

@@ -7,10 +7,11 @@ Top-level experiment orchestrator.
 from typing import List, Optional, Dict, Any
 import threading
 import time
-from pylsl import StreamInfo, StreamOutlet
 from .execution.timeline import Timeline
+from .execution.branch_block import BranchBlock
 from .device_manager import DeviceManager
 from .data_collector import DataCollector
+from .markers.router import MarkerRouter
 
 
 class Experiment:
@@ -46,7 +47,7 @@ class Experiment:
         # Core components
         self.timeline: Timeline = timeline if timeline is not None else Timeline()
         self.device_manager: DeviceManager = DeviceManager()
-        self.lsl_outlet: Optional[StreamOutlet] = None
+        self.lsl_outlet: Optional[MarkerRouter] = None
         self.data_collector: DataCollector = DataCollector()
         
         # IPC queue for sending messages to GUI
@@ -82,14 +83,44 @@ class Experiment:
         self.description = metadata.get('description', '')
 
         # Configure device manager from timeline metadata
-        if metadata.get('audio_device_1') is not None:
+        # Include validation warnings for missing configuration
+        if metadata.get('audio_device_1') is None:
+            print("[Experiment] WARNING: No audio device configured for P1 in timeline")
+            print(f"[Experiment] WARNING: Using default device index {self.device_manager.audio_device_p1}")
+            print("[Experiment] WARNING: Go to Devices > Setup Devices and save configuration")
+        else:
             self.device_manager.audio_device_p1 = metadata['audio_device_1']
-        if metadata.get('audio_device_2') is not None:
+
+        if metadata.get('audio_device_2') is None:
+            print("[Experiment] WARNING: No audio device configured for P2 in timeline")
+            print(f"[Experiment] WARNING: Using default device index {self.device_manager.audio_device_p2}")
+            print("[Experiment] WARNING: Go to Devices > Setup Devices and save configuration")
+        else:
             self.device_manager.audio_device_p2 = metadata['audio_device_2']
+
         if metadata.get('participant_1_monitor') is not None:
             self.device_manager.display_p1 = metadata['participant_1_monitor']
         if metadata.get('participant_2_monitor') is not None:
             self.device_manager.display_p2 = metadata['participant_2_monitor']
+
+        # Log final device configuration for debugging
+        print(f"[Experiment] Audio devices: P1=device {self.device_manager.audio_device_p1}, "
+              f"P2=device {self.device_manager.audio_device_p2}")
+        print(f"[Experiment] Displays: P1=screen {self.device_manager.display_p1}, "
+              f"P2=screen {self.device_manager.display_p2}")
+
+        # Configure keyboard device paths (optional)
+        if metadata.get('keyboard_device_1_path'):
+            self.device_manager.keyboard_device_p1 = metadata['keyboard_device_1_path']
+        if metadata.get('keyboard_device_2_path'):
+            self.device_manager.keyboard_device_p2 = metadata['keyboard_device_2_path']
+
+        if self.device_manager.keyboard_device_p1 and self.device_manager.keyboard_device_p2:
+            print(f"[Experiment] Keyboard routing: Both keyboards configured (unified key mode)")
+        elif self.device_manager.keyboard_device_p1 or self.device_manager.keyboard_device_p2:
+            print(f"[Experiment] WARNING: Only one keyboard configured - routing disabled")
+        else:
+            print(f"[Experiment] Keyboard routing: Not configured (using separate key bindings)")
 
         # Configure data collector output directory
         output_dir = metadata.get('output_directory')
@@ -328,45 +359,20 @@ class Experiment:
 
         print(f"[Experiment] Loaded from {filepath}")
 
-    def _initialize_lsl(self) -> StreamOutlet:
+    def _initialize_lsl(self) -> MarkerRouter:
         """
-        Initialize LSL stream for markers with metadata.
+        Initialize dual LSL marker streams (one per participant).
 
-        Adds headset assignment to stream metadata (instead of using markers 9161/9162).
-        Metadata is stored in XDF file header and cannot be missed like time-series markers.
+        Each stream carries headset assignment in its metadata.
+        Shared markers (baseline, trial start) are sent to both streams.
+        Participant-specific markers are routed to the correct stream only.
 
         Returns:
-            StreamOutlet instance
+            MarkerRouter wrapping two StreamOutlet instances
         """
-        info = StreamInfo(
-            name='ExpEvent_Markers',
-            type='Markers',
-            channel_count=1,
-            channel_format='string',
-            source_id='dyadicsync_exp'
-        )
-
-        # Add experiment metadata to stream description
-        desc = info.desc()
-        desc.append_child_value('experiment_system', 'DyadicSync')
-        desc.append_child_value('version', '2.0')
-
-        # Add headset assignment metadata (replaces markers 9161/9162)
-        if self.headset_selection:
-            # Participant 1 headset
-            p1 = desc.append_child('participant_1')
-            p1.append_child_value('headset_id', self.headset_selection)  # 'B16' or 'B1A'
-
-            # Participant 2 headset (opposite of P1)
-            p2 = desc.append_child('participant_2')
-            p2_headset = 'B1A' if self.headset_selection == 'B16' else 'B16'
-            p2.append_child_value('headset_id', p2_headset)
-
-            print(f"[Experiment] LSL metadata: P1={self.headset_selection}, P2={p2_headset}")
-
-        outlet = StreamOutlet(info)
-        print("[Experiment] LSL stream initialized: ExpEvent_Markers")
-        return outlet
+        router = MarkerRouter.create(headset_selection=self.headset_selection)
+        print("[Experiment] LSL initialized: dual marker streams (P1 + P2)")
+        return router
 
     def get_progress(self) -> Dict[str, Any]:
         """

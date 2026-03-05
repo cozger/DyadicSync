@@ -82,9 +82,17 @@ class DeviceSetupDialog(tk.Toplevel):
         self.audio_output_combos: Dict[str, ttk.Combobox] = {}
         self.audio_input_combos: Dict[str, ttk.Combobox] = {}
 
+        # Keyboard identification state
+        self._keyboard_info_p1 = None  # KeyboardDeviceInfo or None
+        self._keyboard_info_p2 = None
+        self._keyboard_identifier = None  # Active KeyboardIdentifier
+        self._identifying_participant = None  # 'p1' or 'p2' during identification
+        self._identify_poll_id = None  # tkinter after() ID for polling
+
         # Setup UI
         self._configure_styles()
         self._create_ui()
+        self._disable_combobox_scroll()
         self._scan_devices()
         self._load_from_timeline()
 
@@ -104,6 +112,22 @@ class DeviceSetupDialog(tk.Toplevel):
 
         # Configure window close
         self.protocol("WM_DELETE_WINDOW", self._on_cancel)
+
+    def _disable_combobox_scroll(self):
+        """Disable mouse wheel changing combobox values (click-only selection)."""
+        for combo in self.winfo_children_recursive_comboboxes():
+            combo.bind('<MouseWheel>', lambda e: 'break')
+
+    def winfo_children_recursive_comboboxes(self):
+        """Find all Combobox widgets recursively."""
+        result = []
+        def _recurse(widget):
+            for child in widget.winfo_children():
+                if isinstance(child, ttk.Combobox):
+                    result.append(child)
+                _recurse(child)
+        _recurse(self)
+        return result
 
     def _configure_styles(self):
         """Configure TTK styles"""
@@ -159,6 +183,7 @@ class DeviceSetupDialog(tk.Toplevel):
         self._create_display_section(self.scrollable_content)
         self._create_audio_output_section(self.scrollable_content)
         self._create_audio_input_section(self.scrollable_content)
+        self._create_keyboard_section(self.scrollable_content)
         self._create_status_section(self.scrollable_content)
 
         # Buttons at bottom (fixed, always visible)
@@ -171,27 +196,51 @@ class DeviceSetupDialog(tk.Toplevel):
 
         # Control monitor
         tk.Label(section, text="Control Monitor (Experimenter):", font=('Arial', 9)).pack(anchor='w')
+        control_frame = tk.Frame(section)
+        control_frame.pack(fill='x', pady=(0, 10))
+
         self.device_vars['control_monitor'] = tk.StringVar()
-        control_combo = ttk.Combobox(section, textvariable=self.device_vars['control_monitor'], state='readonly')
-        control_combo.pack(fill='x', pady=(0, 10))
+        control_combo = ttk.Combobox(control_frame, textvariable=self.device_vars['control_monitor'], state='readonly')
+        control_combo.pack(side='left', fill='x', expand=True)
         control_combo.bind('<<ComboboxSelected>>', lambda e: self._on_display_selected('control'))
         self.display_combos['control'] = control_combo
 
+        ttk.Button(control_frame, text="Test", width=8,
+                   command=lambda: self._test_display('control')).pack(side='left', padx=(5, 0))
+
         # Participant 1
         tk.Label(section, text="Participant 1 Monitor:", font=('Arial', 9)).pack(anchor='w')
+        p1_frame = tk.Frame(section)
+        p1_frame.pack(fill='x', pady=(0, 10))
+
         self.device_vars['p1_monitor'] = tk.StringVar()
-        p1_combo = ttk.Combobox(section, textvariable=self.device_vars['p1_monitor'], state='readonly')
-        p1_combo.pack(fill='x', pady=(0, 10))
+        p1_combo = ttk.Combobox(p1_frame, textvariable=self.device_vars['p1_monitor'], state='readonly')
+        p1_combo.pack(side='left', fill='x', expand=True)
         p1_combo.bind('<<ComboboxSelected>>', lambda e: self._on_display_selected('p1'))
         self.display_combos['p1'] = p1_combo
 
+        ttk.Button(p1_frame, text="Test", width=8,
+                   command=lambda: self._test_display('p1')).pack(side='left', padx=(5, 0))
+
         # Participant 2
         tk.Label(section, text="Participant 2 Monitor:", font=('Arial', 9)).pack(anchor='w')
+        p2_frame = tk.Frame(section)
+        p2_frame.pack(fill='x', pady=(0, 5))
+
         self.device_vars['p2_monitor'] = tk.StringVar()
-        p2_combo = ttk.Combobox(section, textvariable=self.device_vars['p2_monitor'], state='readonly')
-        p2_combo.pack(fill='x', pady=(0, 5))
+        p2_combo = ttk.Combobox(p2_frame, textvariable=self.device_vars['p2_monitor'], state='readonly')
+        p2_combo.pack(side='left', fill='x', expand=True)
         p2_combo.bind('<<ComboboxSelected>>', lambda e: self._on_display_selected('p2'))
         self.display_combos['p2'] = p2_combo
+
+        ttk.Button(p2_frame, text="Test", width=8,
+                   command=lambda: self._test_display('p2')).pack(side='left', padx=(5, 0))
+
+        # Test All button
+        test_all_frame = tk.Frame(section)
+        test_all_frame.pack(fill='x', pady=(8, 0))
+        ttk.Button(test_all_frame, text="Test All Displays", width=18,
+                   command=self._test_all_displays).pack(anchor='e')
 
     def _create_audio_output_section(self, parent):
         """Create audio output configuration section"""
@@ -249,6 +298,168 @@ class DeviceSetupDialog(tk.Toplevel):
         p2_input_combo.pack(fill='x', pady=(0, 5))
         self.audio_input_combos['p2'] = p2_input_combo
 
+    def _create_keyboard_section(self, parent):
+        """Create keyboard configuration section (optional)"""
+        section = ttk.LabelFrame(parent, text="Keyboard Configuration (Optional)", padding=10)
+        section.pack(fill='x', pady=(0, 15))
+
+        hint_label = tk.Label(
+            section,
+            text="Identify each participant's keyboard so both can use the same keys (e.g., 1-7).",
+            font=('Arial', 8),
+            fg=self.theme_colors['status_inactive'],
+            anchor='w'
+        )
+        hint_label.pack(fill='x', pady=(0, 10))
+
+        # Participant 1
+        p1_frame = tk.Frame(section)
+        p1_frame.pack(fill='x', pady=(0, 8))
+
+        tk.Label(p1_frame, text="Participant 1:", font=('Arial', 9)).pack(anchor='w')
+        p1_row = tk.Frame(p1_frame)
+        p1_row.pack(fill='x')
+
+        self.device_vars['p1_keyboard'] = tk.StringVar(value="Not configured")
+        self._p1_keyboard_label = tk.Label(
+            p1_row, textvariable=self.device_vars['p1_keyboard'],
+            font=('Arial', 9), anchor='w', width=50
+        )
+        self._p1_keyboard_label.pack(side='left', fill='x', expand=True)
+
+        self._p1_identify_btn = ttk.Button(
+            p1_row, text="Identify", width=10,
+            command=lambda: self._start_keyboard_identify('p1')
+        )
+        self._p1_identify_btn.pack(side='left', padx=(5, 0))
+
+        ttk.Button(
+            p1_row, text="Clear", width=8,
+            command=lambda: self._clear_keyboard('p1')
+        ).pack(side='left', padx=(5, 0))
+
+        # Participant 2
+        p2_frame = tk.Frame(section)
+        p2_frame.pack(fill='x', pady=(0, 5))
+
+        tk.Label(p2_frame, text="Participant 2:", font=('Arial', 9)).pack(anchor='w')
+        p2_row = tk.Frame(p2_frame)
+        p2_row.pack(fill='x')
+
+        self.device_vars['p2_keyboard'] = tk.StringVar(value="Not configured")
+        self._p2_keyboard_label = tk.Label(
+            p2_row, textvariable=self.device_vars['p2_keyboard'],
+            font=('Arial', 9), anchor='w', width=50
+        )
+        self._p2_keyboard_label.pack(side='left', fill='x', expand=True)
+
+        self._p2_identify_btn = ttk.Button(
+            p2_row, text="Identify", width=10,
+            command=lambda: self._start_keyboard_identify('p2')
+        )
+        self._p2_identify_btn.pack(side='left', padx=(5, 0))
+
+        ttk.Button(
+            p2_row, text="Clear", width=8,
+            command=lambda: self._clear_keyboard('p2')
+        ).pack(side='left', padx=(5, 0))
+
+    def _start_keyboard_identify(self, participant: str):
+        """Start keyboard identification for a participant."""
+        # Cancel any in-progress identification
+        self._cancel_keyboard_identify()
+
+        self._identifying_participant = participant
+
+        # Update button text
+        btn = self._p1_identify_btn if participant == 'p1' else self._p2_identify_btn
+        var = self.device_vars[f'{participant}_keyboard']
+        btn.configure(state='disabled')
+        var.set(f"Press any key on {participant.upper()}'s keyboard...")
+
+        # Start identifier
+        try:
+            from core.input.keyboard_identifier import KeyboardIdentifier
+            self._keyboard_identifier = KeyboardIdentifier()
+            self._keyboard_identifier.start_listening()
+
+            # Poll for result via tkinter after() (non-blocking)
+            self._poll_keyboard_identify()
+        except Exception as e:
+            var.set(f"Error: {e}")
+            btn.configure(state='normal')
+            self._identifying_participant = None
+
+    def _poll_keyboard_identify(self):
+        """Poll the keyboard identifier for a result (non-blocking)."""
+        if not self._keyboard_identifier or not self._identifying_participant:
+            return
+
+        result = self._keyboard_identifier.poll_result()
+        participant = self._identifying_participant
+
+        if result:
+            # Success - got a keypress
+            self._keyboard_identifier.stop_listening()
+            self._keyboard_identifier = None
+            self._identifying_participant = None
+
+            # Check for duplicate (same keyboard assigned to both)
+            other = 'p2' if participant == 'p1' else 'p1'
+            other_info = self._keyboard_info_p2 if participant == 'p1' else self._keyboard_info_p1
+            if other_info and other_info.device_path.lower() == result.device_path.lower():
+                self.device_vars[f'{participant}_keyboard'].set("Same as other participant - try again")
+                btn = self._p1_identify_btn if participant == 'p1' else self._p2_identify_btn
+                btn.configure(state='normal')
+                self._update_status()
+                return
+
+            # Store result
+            if participant == 'p1':
+                self._keyboard_info_p1 = result
+            else:
+                self._keyboard_info_p2 = result
+
+            self.device_vars[f'{participant}_keyboard'].set(result.device_name)
+            btn = self._p1_identify_btn if participant == 'p1' else self._p2_identify_btn
+            btn.configure(state='normal')
+            self._update_status()
+        else:
+            # Not yet - schedule another poll (100ms)
+            self._identify_poll_id = self.after(100, self._poll_keyboard_identify)
+
+    def _cancel_keyboard_identify(self):
+        """Cancel any in-progress keyboard identification."""
+        if self._identify_poll_id:
+            self.after_cancel(self._identify_poll_id)
+            self._identify_poll_id = None
+
+        if self._keyboard_identifier:
+            self._keyboard_identifier.stop_listening()
+            self._keyboard_identifier = None
+
+        if self._identifying_participant:
+            participant = self._identifying_participant
+            btn = self._p1_identify_btn if participant == 'p1' else self._p2_identify_btn
+            btn.configure(state='normal')
+            # Restore label if no info was set
+            info = self._keyboard_info_p1 if participant == 'p1' else self._keyboard_info_p2
+            if not info:
+                self.device_vars[f'{participant}_keyboard'].set("Not configured")
+            self._identifying_participant = None
+
+    def _clear_keyboard(self, participant: str):
+        """Clear keyboard configuration for a participant."""
+        self._cancel_keyboard_identify()
+
+        if participant == 'p1':
+            self._keyboard_info_p1 = None
+        else:
+            self._keyboard_info_p2 = None
+
+        self.device_vars[f'{participant}_keyboard'].set("Not configured")
+        self._update_status()
+
     def _create_status_section(self, parent):
         """Create status display section"""
         section = ttk.LabelFrame(parent, text="Configuration Status", padding=10)
@@ -272,7 +483,17 @@ class DeviceSetupDialog(tk.Toplevel):
             fg=self.theme_colors['status_inactive'],
             anchor='w'
         )
-        self.status_labels['audio'].pack(fill='x')
+        self.status_labels['audio'].pack(fill='x', pady=(0, 5))
+
+        # Keyboard status
+        self.status_labels['keyboards'] = tk.Label(
+            section,
+            text="◯ Keyboards: Not configured (using separate key bindings)",
+            font=('Arial', 9),
+            fg=self.theme_colors['status_inactive'],
+            anchor='w'
+        )
+        self.status_labels['keyboards'].pack(fill='x')
 
     def _create_buttons(self, parent):
         """Create bottom action buttons"""
@@ -374,6 +595,27 @@ class DeviceSetupDialog(tk.Toplevel):
         if p2_audio_idx is not None:
             self._select_audio_by_index('p2', 'output', p2_audio_idx)
 
+        # Load keyboard configuration
+        p1_kb_path = self.timeline.metadata.get('keyboard_device_1_path')
+        p1_kb_name = self.timeline.metadata.get('keyboard_device_1_name')
+        if p1_kb_path:
+            from core.input.keyboard_identifier import KeyboardDeviceInfo
+            self._keyboard_info_p1 = KeyboardDeviceInfo(
+                device_path=p1_kb_path,
+                device_name=p1_kb_name or "Unknown Keyboard"
+            )
+            self.device_vars['p1_keyboard'].set(self._keyboard_info_p1.device_name)
+
+        p2_kb_path = self.timeline.metadata.get('keyboard_device_2_path')
+        p2_kb_name = self.timeline.metadata.get('keyboard_device_2_name')
+        if p2_kb_path:
+            from core.input.keyboard_identifier import KeyboardDeviceInfo
+            self._keyboard_info_p2 = KeyboardDeviceInfo(
+                device_path=p2_kb_path,
+                device_name=p2_kb_name or "Unknown Keyboard"
+            )
+            self.device_vars['p2_keyboard'].set(self._keyboard_info_p2.device_name)
+
         # Update status
         self._update_status()
 
@@ -401,6 +643,123 @@ class DeviceSetupDialog(tk.Toplevel):
             if dev_idx == device_idx:
                 combos[participant].current(i)
                 break
+
+    def _test_display(self, role: str):
+        """
+        Flash a fullscreen colored overlay on the selected monitor
+        so the user can identify which physical screen it is.
+        """
+        var_key = 'control_monitor' if role == 'control' else f'{role}_monitor'
+        selected = self.device_vars[var_key].get()
+        if not selected:
+            messagebox.showwarning("No Display Selected",
+                                   "Please select a display first.")
+            return
+
+        display_idx = int(selected.split(':')[0])
+        display_info = None
+        for d in self.displays:
+            if d.index == display_idx:
+                display_info = d
+                break
+        if not display_info:
+            return
+
+        role_config = {
+            'control': {'label': 'CONTROL\nMONITOR', 'sublabel': 'Experimenter', 'color': '#1565C0'},
+            'p1':      {'label': 'PARTICIPANT 1', 'sublabel': 'Left Display', 'color': '#2E7D32'},
+            'p2':      {'label': 'PARTICIPANT 2', 'sublabel': 'Right Display', 'color': '#E65100'},
+        }
+        config = role_config[role]
+        self._show_display_test_window(display_info, config)
+
+    def _test_all_displays(self):
+        """Flash test overlays on all configured displays simultaneously."""
+        roles = [
+            ('control', 'control_monitor', 'CONTROL\nMONITOR', 'Experimenter', '#1565C0'),
+            ('p1', 'p1_monitor', 'PARTICIPANT 1', 'Left Display', '#2E7D32'),
+            ('p2', 'p2_monitor', 'PARTICIPANT 2', 'Right Display', '#E65100'),
+        ]
+
+        any_shown = False
+        for role, var_key, label, sublabel, color in roles:
+            selected = self.device_vars[var_key].get()
+            if not selected:
+                continue
+
+            display_idx = int(selected.split(':')[0])
+            display_info = None
+            for d in self.displays:
+                if d.index == display_idx:
+                    display_info = d
+                    break
+            if not display_info:
+                continue
+
+            config = {'label': label, 'sublabel': sublabel, 'color': color}
+            self._show_display_test_window(display_info, config)
+            any_shown = True
+
+        if not any_shown:
+            messagebox.showwarning("No Displays Configured",
+                                   "Please select at least one display first.")
+
+    def _show_display_test_window(self, display_info: 'DisplayInfo', config: dict):
+        """
+        Create a temporary fullscreen overlay on the given display.
+        Auto-closes after 3 seconds, or on click/keypress.
+        """
+        color = config['color']
+
+        test_win = tk.Toplevel(self)
+        test_win.overrideredirect(True)
+        test_win.geometry(
+            f"{display_info.width}x{display_info.height}"
+            f"+{display_info.x}+{display_info.y}"
+        )
+        test_win.configure(bg=color)
+        test_win.attributes('-topmost', True)
+
+        # Role label
+        tk.Label(
+            test_win, text=config['label'],
+            font=('Arial', 80, 'bold'),
+            bg=color, fg='white'
+        ).place(relx=0.5, rely=0.35, anchor='center')
+
+        # Sub-label
+        tk.Label(
+            test_win, text=config['sublabel'],
+            font=('Arial', 32),
+            bg=color, fg='#d0d0d0'
+        ).place(relx=0.5, rely=0.52, anchor='center')
+
+        # Display info
+        tk.Label(
+            test_win,
+            text=f"Display {display_info.index + 1}  —  "
+                 f"{display_info.width} x {display_info.height}",
+            font=('Arial', 20),
+            bg=color, fg='#b0b0b0'
+        ).place(relx=0.5, rely=0.62, anchor='center')
+
+        # Close hint
+        tk.Label(
+            test_win,
+            text="Click anywhere or wait 3 seconds to close",
+            font=('Arial', 14),
+            bg=color, fg='#909090'
+        ).place(relx=0.5, rely=0.78, anchor='center')
+
+        # Close handlers
+        def close_window(event=None):
+            if test_win.winfo_exists():
+                test_win.destroy()
+
+        test_win.bind('<Button-1>', close_window)
+        test_win.bind('<Key>', close_window)
+        test_win.focus_set()
+        test_win.after(3000, close_window)
 
     def _on_display_selected(self, participant: str):
         """Handle display selection"""
@@ -482,6 +841,27 @@ class DeviceSetupDialog(tk.Toplevel):
                 fg=self.theme_colors['status_warning']
             )
 
+        # Check keyboard configuration
+        has_p1_kb = self._keyboard_info_p1 is not None
+        has_p2_kb = self._keyboard_info_p2 is not None
+
+        if has_p1_kb and has_p2_kb:
+            self.status_labels['keyboards'].config(
+                text="✓ Both keyboards identified (unified key mode enabled)",
+                fg=self.theme_colors['status_ready']
+            )
+        elif has_p1_kb or has_p2_kb:
+            missing_kb = "P2" if has_p1_kb else "P1"
+            self.status_labels['keyboards'].config(
+                text=f"⚠ Keyboards: Only {('P1' if has_p1_kb else 'P2')} identified - {missing_kb} also required",
+                fg=self.theme_colors['status_warning']
+            )
+        else:
+            self.status_labels['keyboards'].config(
+                text="◯ Keyboards: Not configured (using separate key bindings)",
+                fg=self.theme_colors['status_inactive']
+            )
+
     def _validate_configuration(self) -> tuple[bool, List[str]]:
         """Validate current configuration"""
         issues = []
@@ -511,6 +891,12 @@ class DeviceSetupDialog(tk.Toplevel):
         if not p2_audio:
             issues.append("Participant 2 audio device not selected")
 
+        # Keyboard: both or neither (warn, don't block)
+        has_p1_kb = self._keyboard_info_p1 is not None
+        has_p2_kb = self._keyboard_info_p2 is not None
+        if has_p1_kb != has_p2_kb:
+            issues.append("Both keyboards must be identified, or neither (one is configured, one is not)")
+
         return (len(issues) == 0, issues)
 
     def _on_save_and_return(self):
@@ -537,13 +923,32 @@ class DeviceSetupDialog(tk.Toplevel):
         self.timeline.metadata['audio_device_1'] = p1_audio
         self.timeline.metadata['audio_device_2'] = p2_audio
 
+        # Save keyboard configuration (optional)
+        if self._keyboard_info_p1:
+            self.timeline.metadata['keyboard_device_1_path'] = self._keyboard_info_p1.device_path
+            self.timeline.metadata['keyboard_device_1_name'] = self._keyboard_info_p1.device_name
+        else:
+            self.timeline.metadata.pop('keyboard_device_1_path', None)
+            self.timeline.metadata.pop('keyboard_device_1_name', None)
+
+        if self._keyboard_info_p2:
+            self.timeline.metadata['keyboard_device_2_path'] = self._keyboard_info_p2.device_path
+            self.timeline.metadata['keyboard_device_2_name'] = self._keyboard_info_p2.device_name
+        else:
+            self.timeline.metadata.pop('keyboard_device_2_path', None)
+            self.timeline.metadata.pop('keyboard_device_2_name', None)
+
         # Mark result as successful
         self.result = True
+
+        # Cancel any in-progress identification before closing
+        self._cancel_keyboard_identify()
 
         # Close dialog
         self.destroy()
 
     def _on_cancel(self):
         """Cancel and close dialog without saving"""
+        self._cancel_keyboard_identify()
         self.result = False
         self.destroy()

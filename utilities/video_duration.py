@@ -7,8 +7,9 @@ the same video is referenced multiple times.
 """
 
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import lru_cache
-from typing import Optional
+from typing import Dict, List, Optional
 import ffmpeg
 from config.ffmpeg_config import get_ffprobe_cmd
 
@@ -124,3 +125,39 @@ def clear_duration_cache():
     to force re-reading of metadata.
     """
     get_video_duration.cache_clear()
+
+
+def probe_videos_parallel(video_paths: List[str], max_workers: Optional[int] = None) -> Dict[str, Optional[float]]:
+    """
+    Probe multiple videos in parallel using ThreadPoolExecutor.
+
+    Results are automatically cached by @lru_cache on get_video_duration(),
+    so subsequent calls to get_video_duration() or get_max_video_duration()
+    for these paths will be instant.
+
+    Args:
+        video_paths: List of video file paths to probe
+        max_workers: Max parallel workers (default: os.cpu_count())
+
+    Returns:
+        Dictionary mapping video_path -> duration (or None if unreadable)
+    """
+    unique_paths = list(set(video_paths))
+
+    if not unique_paths:
+        return {}
+
+    if max_workers is None:
+        max_workers = os.cpu_count() or 4
+
+    print(f"[PARALLEL_PROBE] Probing {len(unique_paths)} unique videos with {max_workers} workers...")
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(get_video_duration, path): path for path in unique_paths}
+        results = {}
+        for future in as_completed(futures):
+            path = futures[future]
+            results[path] = future.result()
+
+    print(f"[PARALLEL_PROBE] ✓ Complete")
+    return results

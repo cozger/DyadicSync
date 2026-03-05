@@ -32,7 +32,8 @@ class ExecutionProgressDialog(tk.Toplevel):
     Uses multiprocessing to avoid Pyglet/Tkinter main thread conflicts.
     """
 
-    def __init__(self, parent, timeline, subject_id, session, headset, output_dir, experiment_name="Experiment"):
+    def __init__(self, parent, timeline, subject_id, session, headset, output_dir,
+                 experiment_name="Experiment", windowed_mode=False):
         """
         Initialize execution progress dialog.
 
@@ -44,6 +45,7 @@ class ExecutionProgressDialog(tk.Toplevel):
             headset: Headset selection ('B16' or 'B1A')
             output_dir: Output directory for data
             experiment_name: Name for display
+            windowed_mode: Run in windowed debug mode instead of fullscreen
         """
         super().__init__(parent)
 
@@ -54,6 +56,7 @@ class ExecutionProgressDialog(tk.Toplevel):
         self.headset = headset
         self.output_dir = output_dir
         self.experiment_name = experiment_name
+        self.windowed_mode = windowed_mode
 
         # Multiprocessing primitives
         self.command_queue = multiprocessing.Queue()
@@ -71,6 +74,7 @@ class ExecutionProgressDialog(tk.Toplevel):
         # LabRecorder controller and state
         self.labrecorder_controller = None
         self.labrecorder_started = False  # Track if LabRecorder has been started
+        self._health_check_counter = 0  # Counter for periodic LabRecorder health checks
 
         # Configure dialog
         self.title("Experiment Execution")
@@ -237,7 +241,8 @@ class ExecutionProgressDialog(tk.Toplevel):
             output_dir=self.output_dir,
             labrecorder_enabled=labrecorder_enabled,
             labrecorder_host=labrecorder_host,
-            labrecorder_port=labrecorder_port
+            labrecorder_port=labrecorder_port,
+            windowed_mode=self.windowed_mode
         )
         config_dict = config.to_dict()
 
@@ -253,18 +258,6 @@ class ExecutionProgressDialog(tk.Toplevel):
         self.experiment_process.start()
 
         print(f"[GUI] Experiment subprocess started (PID: {self.experiment_process.pid})")
-
-        # Start live previews if available
-        if hasattr(self.parent, 'preview_panel'):
-            try:
-                # Screen indices: 1=P1, 2=P2 (dxcam 0-based indexing)
-                self.parent.preview_panel.start_live_previews(
-                    screen_index_p1=1,
-                    screen_index_p2=2
-                )
-                print("[GUI] Started live preview captures")
-            except Exception as e:
-                print(f"[GUI] Failed to start previews: {e}")
 
         # Start polling for updates
         self.after(100, self._check_progress)
@@ -304,6 +297,12 @@ class ExecutionProgressDialog(tk.Toplevel):
 
             except Exception as e:
                 print(f"[GUI] Progress check error: {e}")
+
+        # Periodic LabRecorder health check (~every 5 seconds = 50 * 100ms)
+        self._health_check_counter += 1
+        if self._health_check_counter >= 50:
+            self._health_check_counter = 0
+            self._check_labrecorder_health()
 
         # Check if process died unexpectedly
         if self.experiment_process and not self.experiment_process.is_alive() and not self.execution_complete:
@@ -432,12 +431,12 @@ class ExecutionProgressDialog(tk.Toplevel):
         # Stop LabRecorder if still recording
         self._stop_labrecorder()
 
-        # Ensure previews are stopped
-        if hasattr(self.parent, 'preview_panel'):
+        # Restart live previews (restore from config after execution)
+        if hasattr(self.parent, '_update_monitor_previews'):
             try:
-                self.parent.preview_panel.stop_live_previews()
+                self.parent._update_monitor_previews()
             except Exception as e:
-                print(f"[GUI] Error stopping previews on close: {e}")
+                print(f"[GUI] Error restoring previews on close: {e}")
 
         # Wait for process to finish (with timeout)
         if self.experiment_process and self.experiment_process.is_alive():
@@ -563,18 +562,37 @@ class ExecutionProgressDialog(tk.Toplevel):
                 self.labrecorder_controller = None
 
 
+    def _check_labrecorder_health(self):
+        """Check if LabRecorder TCP connection is still alive."""
+        if not self.labrecorder_controller:
+            return
+
+        if not self.labrecorder_controller.check_connection_alive():
+            print("[GUI] WARNING: LabRecorder connection lost! Recording may have stopped.")
+            self.labrecorder_label.config(
+                text="⚠️ LabRecorder: Connection lost (recording may have stopped)",
+                foreground="red"
+            )
+            # Clear controller to prevent stop attempts on dead socket
+            try:
+                self.labrecorder_controller.socket = None
+                self.labrecorder_controller.close()
+            except Exception:
+                pass
+            self.labrecorder_controller = None
+
     def _on_execution_complete(self):
         """Handle experiment completion or error."""
         # Stop LabRecorder
         self._stop_labrecorder()
 
-        # Stop live previews
-        if hasattr(self.parent, 'preview_panel'):
+        # Restart live previews (execution stops them; restore from config)
+        if hasattr(self.parent, '_update_monitor_previews'):
             try:
-                self.parent.preview_panel.stop_live_previews()
-                print("[GUI] Stopped live preview captures")
+                self.parent._update_monitor_previews()
+                print("[GUI] Restored live preview captures")
             except Exception as e:
-                print(f"[GUI] Error stopping previews: {e}")
+                print(f"[GUI] Error restoring previews: {e}")
 
         # Update UI for completion
         self.pause_button.pack_forget()
@@ -633,7 +651,7 @@ class ExecutionProgressDialog(tk.Toplevel):
         self.grab_release()
 
     @classmethod
-    def run_experiment(cls, parent, timeline, subject_id, session, headset, output_dir):
+    def run_experiment(cls, parent, timeline, subject_id, session, headset, output_dir, windowed_mode=False):
         """
         Show dialog and run experiment.
 
@@ -644,8 +662,10 @@ class ExecutionProgressDialog(tk.Toplevel):
             session: Session number
             headset: Headset selection
             output_dir: Output directory for data
+            windowed_mode: Run in windowed debug mode instead of fullscreen
         """
         experiment_name = timeline.metadata.get('name', 'Experiment')
-        dialog = cls(parent, timeline, subject_id, session, headset, output_dir, experiment_name)
+        dialog = cls(parent, timeline, subject_id, session, headset, output_dir, experiment_name,
+                     windowed_mode=windowed_mode)
         dialog.start_execution()
         # Don't wait for dialog - subprocess will run independently

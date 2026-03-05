@@ -13,8 +13,7 @@
         "participant_2_input": null
     },
     "experiment": {
-        "baseline_length": 240,
-        "csv_path": "D:/Projects/DyadicSync/video_pairs-quick.csv"
+        "baseline_length": 240
     },
     "gui": {
         "theme": "dark",

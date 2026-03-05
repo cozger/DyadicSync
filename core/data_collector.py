@@ -117,7 +117,8 @@ class DataCollector:
 
         print(f"[DataCollector] Saved trial {trial.trial_id}")
 
-    def add_participant_response(self, participant: str, trial_id: int, response: int, rt: float, **kwargs):
+    def add_participant_response(self, participant: str, trial_id: int, response: int, rt: float,
+                                  **kwargs):
         """
         Add a participant response record.
 
@@ -126,7 +127,8 @@ class DataCollector:
             trial_id: Trial ID
             response: Response value (e.g., rating 1-7)
             rt: Reaction time in seconds
-            **kwargs: Additional data (video paths, metadata, etc.)
+            **kwargs: Additional data (VideoPath, affect, role_p1, role_p2,
+                      variant_type, variant_name, trial_index, etc.)
         """
         record = {
             'participant': participant,
@@ -181,9 +183,9 @@ class DataCollector:
 
     def _save_legacy_format(self):
         """
-        Save in legacy format matching WithBaseline.py output.
+        Save in legacy format matching WithBaseline.py output (extended for turn-taking and branch blocks).
 
-        Format: participant, rating, trial_id, video1, video2, timestamp
+        Format: participant, rating, trial_id, video1, video2, timestamp, condition, role, viewer, variant_name, branch_block
         """
         if not self.data_saving_enabled or not self.participant_data:
             return
@@ -196,9 +198,14 @@ class DataCollector:
             legacy_record = {
                 'Participant': record.get('participant'),
                 'Rating': record.get('response'),
-                'VideoPair': record.get('trial_id'),
-                'Video1': record.get('video1', record.get('VideoPath1', '')),
-                'Video2': record.get('video2', record.get('VideoPath2', '')),
+                'RT': record.get('rt'),
+                'TrialIndex': record.get('trial_index'),
+                'VideoPath': record.get('VideoPath', ''),
+                'Affect': record.get('affect', ''),
+                'RoleP1': record.get('role_p1', ''),
+                'RoleP2': record.get('role_p2', ''),
+                'VariantType': record.get('variant_type', ''),
+                'VariantName': record.get('variant_name', ''),
                 'Timestamp': record.get('timestamp')
             }
             legacy_data.append(legacy_record)

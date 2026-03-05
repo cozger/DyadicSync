@@ -1,17 +1,16 @@
 """
 FixationPhase implementation for DyadicSync Framework.
 
-Displays a fixation cross on both participant screens with zero-ISI preload scheduling.
+Displays a fixation cross on one or both participant screens.
+When display_target is "p1" or "p2", the non-viewer sees observer_text (or blank).
 
-Phase 3 Enhancement:
-- Early preload scheduling (STAGE 1): Triggers next phase resource loading at T+200ms
-- Late sync prep scheduling (STAGE 2): Triggers sync preparation at T-150ms before end
-- Enables seamless transition to next phase with <5ms ISI
+Preload scheduling:
+- STAGE 2 (sync prep) scheduled at T-150ms before phase end
+- STAGE 1 (resource loading) handled externally by ContinuousPreloader
 """
 
 from typing import Dict, List, Set, Any, Optional
 import time
-import threading
 import logging
 import pyglet
 from ..phase import Phase
@@ -21,317 +20,277 @@ logger = logging.getLogger(__name__)
 
 class FixationPhase(Phase):
     """
-    Phase for displaying a fixation cross.
+    Displays a fixation cross for a specified duration.
 
-    Displays a white fixation cross on both participant screens for a specified duration.
+    display_target controls who sees the cross:
+      "both" — both participants see the cross
+      "p1"   — P1 sees cross, P2 sees observer_text (or blank)
+      "p2"   — P2 sees cross, P1 sees observer_text (or blank)
     """
 
     def __init__(
         self,
         name: str = "Fixation",
-        duration: float = 3.0
+        duration: float = 3.0,
+        display_target: str = "both",
+        observer_text: Optional[str] = None
     ):
-        """
-        Initialize fixation phase.
-
-        Args:
-            name: Phase name
-            duration: Duration in seconds
-
-        Note:
-            Markers are configured via marker_bindings list.
-            Common events: phase_start, phase_end
-        """
-        super().__init__(name)
+        super().__init__(name, display_target=display_target)
         self.duration = duration
+        self.observer_text = observer_text
 
-    def execute(self, device_manager, lsl_outlet, trial_data: Optional[Dict[str, Any]] = None,
+    # ------------------------------------------------------------------
+    # Execute
+    # ------------------------------------------------------------------
+
+    def execute(self, device_manager, lsl_outlet,
+                trial_data: Optional[Dict[str, Any]] = None,
                 on_complete=None) -> None:
-        """
-        Execute fixation phase (non-blocking, callback-based).
-
-        Args:
-            device_manager: DeviceManager instance
-            lsl_outlet: LSL StreamOutlet
-            trial_data: Dictionary of trial variables for marker template resolution
-            on_complete: Callback function(result_dict) called when phase completes
-
-        Events emitted:
-            - phase_start: At beginning of fixation display
-            - phase_end: At end of fixation display
-
-        Note:
-            This method is non-blocking. It schedules the phase execution and returns immediately.
-            Results are passed to on_complete callback when phase finishes.
-        """
-        # Send phase_start event markers
+        """Non-blocking execution. Schedules visuals and calls on_complete after duration."""
         self.send_event_markers("phase_start", lsl_outlet, trial_data)
-
         start_time = time.time()
 
-        # Get windows from device manager
         window1 = device_manager.window1
         window2 = device_manager.window2
 
-        # CRITICAL: Switch to window1's OpenGL context before creating its graphics
-        window1.switch_to()
-        self.cross1 = self._create_cross_display(window1)
+        # Decide what each window shows
+        p1_gets_cross = self.display_target in ("both", "p1")
+        p2_gets_cross = self.display_target in ("both", "p2")
 
-        # CRITICAL: Switch to window2's OpenGL context before creating its graphics
-        window2.switch_to()
-        self.cross2 = self._create_cross_display(window2)
+        # Observer text goes to the OTHER participant
+        p1_text = self.observer_text if (not p1_gets_cross and self.observer_text) else None
+        p2_text = self.observer_text if (not p2_gets_cross and self.observer_text) else None
 
-        # Activate crosses
-        self.cross1.active = True
-        self.cross2.active = True
-
-        # Set up draw handlers (reference INSTANCE variables)
-        @window1.event
-        def on_draw():
-            window1.clear()
-            self.cross1.draw()
-
-        @window2.event
-        def on_draw():
-            window2.clear()
-            self.cross2.draw()
-
-        # Schedule preloading of next phase (if available)
-        end_time_target = time.time() + self.duration
-        self.stage2_callback = None
-        if hasattr(self, '_next_phase') and self._next_phase:
-            self.stage2_callback = self._schedule_preload_stages(start_time, end_time_target)
-
-        # Schedule finish callback
-        def finish_phase(dt):
-            """Cleanup and complete phase."""
-            end_time = time.time()
-
-            # Cleanup: Deactivate crosses
-            self.cross1.active = False
-            self.cross2.active = False
-
-            # Unschedule STAGE 2 callback if still pending
-            if self.stage2_callback:
-                try:
-                    pyglet.clock.unschedule(self.stage2_callback)
-                    logger.debug("FixationPhase: Unscheduled STAGE 2 callback during cleanup")
-                except:
-                    pass
-
-            # Send phase_end event markers
-            self.send_event_markers("phase_end", lsl_outlet, trial_data)
-
-            # Prepare result
-            result = {
-                'duration': end_time - start_time,
-                'start_time': start_time,
-                'end_time': end_time
-            }
-
-            # Call completion callback
-            if on_complete:
-                on_complete(result)
-
-        # Schedule phase completion after duration
-        pyglet.clock.schedule_once(finish_phase, self.duration)
-
-    def _create_cross_display(self, window):
-        """
-        Create a cross display object for a window.
-
-        Args:
-            window: Pyglet window
-
-        Returns:
-            CrossDisplay object
-        """
-        class CrossDisplay:
-            def __init__(self, window):
-                self.window = window
-                self.active = False
-                self.batch = pyglet.graphics.Batch()
-
-                self.cross_length = min(window.width, window.height) * 0.2
-                self.cross_thickness = self.cross_length * 0.1
-
-                center_x = window.width // 2
-                center_y = window.height // 2
-
-                self.vertical = pyglet.shapes.Rectangle(
-                    x=center_x - self.cross_thickness/2,
-                    y=center_y - self.cross_length/2,
-                    width=self.cross_thickness,
-                    height=self.cross_length,
-                    color=(255, 255, 255),
-                    batch=self.batch
-                )
-
-                self.horizontal = pyglet.shapes.Rectangle(
-                    x=center_x - self.cross_length/2,
-                    y=center_y - self.cross_thickness/2,
-                    width=self.cross_length,
-                    height=self.cross_thickness,
-                    color=(255, 255, 255),
-                    batch=self.batch
-                )
-
-            def draw(self):
-                if self.active:
-                    self.batch.draw()
-
-        return CrossDisplay(window)
-
-    def _schedule_preload_stages(self, start_time: float, end_time_target: float):
-        """
-        Schedule STAGE 2 (late sync prep) for next phase during fixation display.
-
-        CRITICAL FIX: STAGE 1 (resource loading) is handled by Procedure.execute()
-        via ContinuousPreloader. This method ONLY handles STAGE 2 (sync preparation).
-
-        STAGE 2 (Late): Prepare sync at T-150ms before end
-
-        Args:
-            start_time: Fixation start timestamp
-            end_time_target: Fixation end timestamp
-        """
-        next_phase = self._next_phase
-
-        # Timing calculation for STAGE 2 only
-        late_sync_prep_time = end_time_target - 0.150  # 150ms before end
-
-        logger.debug(
-            f"FixationPhase: Scheduling STAGE 2 (sync prep) for {next_phase.name} "
-            f"at T-150ms before fixation ends"
+        logger.info(
+            f"FixationPhase '{self.name}': display_target={self.display_target}, "
+            f"observer_text={self.observer_text!r}, "
+            f"p1={'cross' if p1_gets_cross else (repr(p1_text) or 'blank')}, "
+            f"p2={'cross' if p2_gets_cross else (repr(p2_text) or 'blank')}"
         )
 
-        # STAGE 2: Late sync preparation (scheduled via pyglet clock)
-        def stage2_late_sync_prep(dt):
-            """Pyglet clock callback for STAGE 2 sync preparation."""
+        # Build visuals for Window 1 (P1)
+        window1.switch_to()
+        self._w1_cross = self._make_cross(window1) if p1_gets_cross else None
+        self._w1_label = self._make_label(window1, p1_text) if p1_text else None
+
+        # Build visuals for Window 2 (P2)
+        window2.switch_to()
+        self._w2_cross = self._make_cross(window2) if p2_gets_cross else None
+        self._w2_label = self._make_label(window2, p2_text) if p2_text else None
+
+        # Draw handlers — capture refs via default args to avoid closure issues
+        @window1.event
+        def on_draw(cross=self._w1_cross, label=self._w1_label):
+            window1.clear()
+            if cross:
+                cross.draw()
+            elif label:
+                label.draw()
+
+        @window2.event
+        def on_draw(cross=self._w2_cross, label=self._w2_label):
+            window2.clear()
+            if cross:
+                cross.draw()
+            elif label:
+                label.draw()
+
+        # Preload scheduling for next phase
+        self._stage2_cb = None
+        if hasattr(self, '_next_phase') and self._next_phase:
+            self._stage2_cb = self._schedule_stage2(time.time() + self.duration)
+
+        # Phase completion
+        def finish(dt):
+            if self._stage2_cb:
+                try:
+                    pyglet.clock.unschedule(self._stage2_cb)
+                except Exception:
+                    pass
+            self.send_event_markers("phase_end", lsl_outlet, trial_data)
+            if on_complete:
+                on_complete({
+                    'duration': time.time() - start_time,
+                    'start_time': start_time,
+                    'end_time': time.time()
+                })
+
+        pyglet.clock.schedule_once(finish, self.duration)
+
+    # ------------------------------------------------------------------
+    # Visual helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _make_cross(window):
+        """Create a white fixation cross centered in *window*. Returns a drawable."""
+        batch = pyglet.graphics.Batch()
+        length = min(window.width, window.height) * 0.2
+        thickness = length * 0.1
+        cx, cy = window.width // 2, window.height // 2
+
+        # Store shapes so they aren't garbage-collected
+        vert = pyglet.shapes.Rectangle(
+            x=cx - thickness / 2, y=cy - length / 2,
+            width=thickness, height=length,
+            color=(255, 255, 255), batch=batch
+        )
+        horiz = pyglet.shapes.Rectangle(
+            x=cx - length / 2, y=cy - thickness / 2,
+            width=length, height=thickness,
+            color=(255, 255, 255), batch=batch
+        )
+
+        class _Cross:
+            def __init__(self):
+                self.batch = batch
+                self._vert = vert
+                self._horiz = horiz
+
+            def draw(self):
+                self.batch.draw()
+
+        return _Cross()
+
+    @staticmethod
+    def _make_label(window, text):
+        """Create a white centered text label in *window*. Returns a drawable."""
+        batch = pyglet.graphics.Batch()
+
+        # CRITICAL: store the Label reference so it isn't garbage-collected.
+        # Without this, the batch has no vertices to draw.
+        label = pyglet.text.Label(
+            text,
+            font_name='Arial',
+            font_size=24,
+            color=(255, 255, 255, 255),
+            x=window.width // 2,
+            y=window.height // 2,
+            anchor_x='center',
+            anchor_y='center',
+            multiline=True,
+            width=int(window.width * 0.8),
+            batch=batch
+        )
+
+        class _Text:
+            def __init__(self):
+                self.batch = batch
+                self._label = label  # prevent GC
+
+            def draw(self):
+                self.batch.draw()
+
+        return _Text()
+
+    # ------------------------------------------------------------------
+    # Preload scheduling (STAGE 2 only — STAGE 1 is external)
+    # ------------------------------------------------------------------
+
+    def _schedule_stage2(self, end_time_target: float):
+        """Schedule sync-prep callback at T-150ms before phase end."""
+        next_phase = self._next_phase
+        delay = (end_time_target - 0.150) - time.time()
+
+        def stage2(dt):
             try:
-                # HIGH PRIORITY FIX #6: Verify STAGE 1 completed before STAGE 2
-                if hasattr(next_phase, '_is_prepared') and not next_phase._is_prepared:
-                    logger.warning(
-                        f"FixationPhase STAGE 2: STAGE 1 (resource loading) not yet complete "
-                        f"for {next_phase.name}. Sync prep may fail if resources not ready."
-                    )
-                    # Still attempt STAGE 2 - VideoPhase.execute() will validate and fail gracefully
-
-                # Check if next phase supports sync preparation
                 if hasattr(next_phase, 'prepare_sync') and callable(next_phase.prepare_sync):
-                    logger.info(f"FixationPhase STAGE 2: Triggering prepare_sync() for {next_phase.name}")
+                    logger.info(f"FixationPhase STAGE 2: prepare_sync() for {next_phase.name}")
                     next_phase.prepare_sync(prep_time_ms=150)
-                else:
-                    logger.debug(f"FixationPhase STAGE 2: {next_phase.name} does not need sync prep")
-
-                # Unschedule this callback (one-time execution)
-                pyglet.clock.unschedule(stage2_late_sync_prep)
-
             except Exception as e:
                 logger.error(f"FixationPhase STAGE 2 error: {e}", exc_info=True)
 
-        # Schedule STAGE 2 (late sync prep) via pyglet clock
-        delay_until_stage2 = late_sync_prep_time - time.time()
-        if delay_until_stage2 > 0:
-            pyglet.clock.schedule_once(stage2_late_sync_prep, delay_until_stage2)
-            logger.debug(f"FixationPhase: STAGE 2 scheduled for {delay_until_stage2:.3f}s from now")
+        if delay > 0:
+            pyglet.clock.schedule_once(stage2, delay)
         else:
-            # CRITICAL FIX: If not enough time, execute STAGE 2 immediately
-            logger.warning(
-                f"FixationPhase: Not enough time for scheduled STAGE 2 "
-                f"(need 150ms, only {delay_until_stage2*1000:.1f}ms remaining) - executing immediately"
-            )
-            stage2_late_sync_prep(0)  # Execute with dt=0
+            stage2(0)
 
-        # Return callback for cleanup (MEDIUM PRIORITY FIX #6)
-        return stage2_late_sync_prep
+        return stage2
+
+    # ------------------------------------------------------------------
+    # Validation / estimation
+    # ------------------------------------------------------------------
 
     def validate(self) -> List[str]:
-        """Validate fixation phase configuration."""
         errors = []
-
         if self.duration <= 0:
             errors.append(f"Duration must be positive, got {self.duration}")
-
+        errors.extend(self._validate_display_target())
         return errors
 
     def get_estimated_duration(self) -> float:
-        """Return duration in seconds."""
         return self.duration
 
+    # ------------------------------------------------------------------
+    # Template rendering
+    # ------------------------------------------------------------------
+
     def render(self, trial_data: Dict[str, Any]) -> 'FixationPhase':
-        """
-        Render phase with trial data (replace template variables).
-
-        Args:
-            trial_data: Dictionary of trial variables
-
-        Returns:
-            New FixationPhase instance with variables replaced
-
-        Supports template variables:
-            {duration} - Duration in seconds
-        """
-        # Convert duration to string for template replacement
+        """Return a new instance with template variables resolved."""
         duration_str = str(self.duration)
+        duration = (
+            float(self._replace_template(duration_str, trial_data))
+            if self._is_template(duration_str) else self.duration
+        )
 
-        # Check if duration is a template
-        if self._is_template(duration_str):
-            duration_replaced = self._replace_template(duration_str, trial_data)
-            duration = float(duration_replaced)
-        else:
-            duration = self.duration
+        display_target = self.display_target
+        if self._is_template(display_target):
+            display_target = self._replace_template(display_target, trial_data)
 
-        # Create new instance with replaced values
+        obs_text = self.observer_text
+        if obs_text and self._is_template(str(obs_text)):
+            obs_text = self._replace_template(str(obs_text), trial_data)
+
         rendered = FixationPhase(
             name=self.name,
-            duration=duration
+            duration=duration,
+            display_target=display_target,
+            observer_text=obs_text
         )
-        # Copy marker bindings to rendered instance
         rendered.marker_bindings = self.marker_bindings.copy()
         return rendered
 
     def get_required_variables(self) -> Set[str]:
-        """
-        Get template variables required by this phase.
-
-        Returns:
-            Set of variable names (e.g., {'duration'})
-        """
-        # Get marker template variables from parent
         variables = super().get_required_variables()
 
-        # Check if duration is a template
         duration_str = str(self.duration)
         if self._is_template(duration_str):
             variables.update(self._extract_variables(duration_str))
+        if self._is_template(self.display_target):
+            variables.update(self._extract_variables(self.display_target))
+        if self.observer_text and self._is_template(str(self.observer_text)):
+            variables.update(self._extract_variables(str(self.observer_text)))
 
         return variables
 
+    # ------------------------------------------------------------------
+    # Serialization
+    # ------------------------------------------------------------------
+
     def to_dict(self) -> Dict[str, Any]:
-        """Serialize to dictionary."""
-        return {
+        data = {
             'type': 'FixationPhase',
             'name': self.name,
             'duration': self.duration,
-            'marker_bindings': [binding.to_dict() for binding in self.marker_bindings]
+            'display_target': self.display_target,
+            'marker_bindings': [b.to_dict() for b in self.marker_bindings]
         }
+        if self.observer_text:
+            data['observer_text'] = self.observer_text
+        return data
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'FixationPhase':
-        """Deserialize from dictionary."""
         from core.markers import MarkerBinding
 
         phase = cls(
             name=data.get('name', 'Fixation'),
-            duration=data.get('duration', 3.0)
+            duration=data.get('duration', 3.0),
+            display_target=data.get('display_target', 'both'),
+            observer_text=data.get('observer_text')
         )
-
-        # Load marker bindings
         if 'marker_bindings' in data:
             phase.marker_bindings = [
-                MarkerBinding.from_dict(binding_data)
-                for binding_data in data['marker_bindings']
+                MarkerBinding.from_dict(d) for d in data['marker_bindings']
             ]
-
         return phase

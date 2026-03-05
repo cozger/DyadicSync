@@ -4,13 +4,49 @@ Preview panel for displaying participant monitor previews.
 
 import tkinter as tk
 from tkinter import ttk, Canvas
-from typing import Optional
+from typing import Optional, Dict, Tuple
 import sys
 from pathlib import Path
 
 sys.path.append(str(Path(__file__).parent.parent))
 
 from config.trial import Trial
+
+
+def _find_dxcam_output(screen_x: int, screen_y: int,
+                       screen_width: int, screen_height: int
+                       ) -> Optional[Tuple[int, int]]:
+    """
+    Match Pyglet screen coordinates to dxcam (device_idx, output_idx).
+
+    Pyglet (GDI EnumDisplayMonitors) and dxcam (DXGI EnumOutputs) may enumerate
+    monitors in different orders. This function matches by desktop coordinates
+    to find the correct dxcam output regardless of enumeration order.
+
+    Args:
+        screen_x: Left coordinate of the screen
+        screen_y: Top coordinate of the screen
+        screen_width: Width of the screen in pixels
+        screen_height: Height of the screen in pixels
+
+    Returns:
+        Tuple of (device_idx, output_idx) for dxcam.create(), or None if no match
+    """
+    try:
+        import dxcam
+        # Access the module-level factory singleton that tracks all DXGI outputs
+        factory = dxcam.__dict__['__factory']
+        for device_idx, outputs in enumerate(factory.outputs):
+            for output_idx, output in enumerate(outputs):
+                output.update_desc()
+                coords = output.desc.DesktopCoordinates
+                if (coords.left == screen_x and coords.top == screen_y and
+                        (coords.right - coords.left) == screen_width and
+                        (coords.bottom - coords.top) == screen_height):
+                    return (device_idx, output_idx)
+    except Exception as e:
+        print(f"[Preview] Error matching dxcam output by coordinates: {e}")
+    return None
 
 
 class MonitorPreview(ttk.LabelFrame):
@@ -109,21 +145,47 @@ class MonitorPreview(ttk.LabelFrame):
         self._draw_placeholder()
         self.info_label.config(text="No trial selected")
 
-    def start_preview(self, screen_index: int):
+    def start_preview(self, screen_index: int,
+                      screen_info: Optional[Dict[str, int]] = None):
         """
         Start live screen capture preview.
 
         Args:
-            screen_index: Monitor index for dxcam (0-based)
+            screen_index: Pyglet screen index (used as label and fallback)
+            screen_info: Optional dict with {x, y, width, height} from Pyglet/DisplayInfo.
+                         When provided, coordinates are used to find the correct dxcam
+                         output (since Pyglet and dxcam may enumerate monitors differently).
         """
         try:
             import dxcam
             from PIL import Image, ImageTk
 
-            # Create camera for specified screen
-            self.camera = dxcam.create(output_idx=screen_index)
+            device_idx = 0
+            output_idx = screen_index  # fallback: assume index equality
+
+            # Use coordinate-based mapping if screen_info provided
+            if screen_info is not None:
+                match = _find_dxcam_output(
+                    screen_info['x'], screen_info['y'],
+                    screen_info['width'], screen_info['height']
+                )
+                if match is not None:
+                    device_idx, output_idx = match
+                    print(f"[Preview] P{self.participant_num}: Pyglet screen {screen_index} "
+                          f"-> dxcam device={device_idx}, output={output_idx} "
+                          f"(matched at {screen_info['x']},{screen_info['y']} "
+                          f"{screen_info['width']}x{screen_info['height']})")
+                else:
+                    print(f"[Preview] P{self.participant_num}: No dxcam match for coords "
+                          f"({screen_info['x']},{screen_info['y']} "
+                          f"{screen_info['width']}x{screen_info['height']}), "
+                          f"falling back to output_idx={screen_index}")
+
+            # Create camera for the resolved output
+            self.camera = dxcam.create(device_idx=device_idx, output_idx=output_idx)
             if self.camera is None:
-                raise RuntimeError(f"Failed to create camera for screen {screen_index}")
+                raise RuntimeError(
+                    f"Failed to create camera (device={device_idx}, output={output_idx})")
 
             self.capturing = True
             self.info_label.config(text=f"Live Preview (Screen {screen_index})")
@@ -297,16 +359,20 @@ class PreviewPanel(ttk.Frame):
         self.preview1.clear()
         self.preview2.clear()
 
-    def start_live_previews(self, screen_index_p1: int, screen_index_p2: int):
+    def start_live_previews(self, screen_index_p1: int, screen_index_p2: int,
+                            screen_info_p1: Optional[Dict[str, int]] = None,
+                            screen_info_p2: Optional[Dict[str, int]] = None):
         """
         Start live screen capture for both participant monitors.
 
         Args:
-            screen_index_p1: Monitor index for participant 1 (dxcam 0-based)
-            screen_index_p2: Monitor index for participant 2 (dxcam 0-based)
+            screen_index_p1: Pyglet screen index for participant 1
+            screen_index_p2: Pyglet screen index for participant 2
+            screen_info_p1: Optional {x, y, width, height} for P1 screen
+            screen_info_p2: Optional {x, y, width, height} for P2 screen
         """
-        self.preview1.start_preview(screen_index_p1)
-        self.preview2.start_preview(screen_index_p2)
+        self.preview1.start_preview(screen_index_p1, screen_info=screen_info_p1)
+        self.preview2.start_preview(screen_index_p2, screen_info=screen_info_p2)
 
     def stop_live_previews(self):
         """

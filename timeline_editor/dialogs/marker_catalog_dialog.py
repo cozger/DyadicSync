@@ -68,6 +68,11 @@ class MarkerCatalogDialog(tk.Toplevel):
         self.notebook.add(self.string_tab, text="String Markers")
         self._create_string_marker_view(self.string_tab)
 
+        # Template variables reference tab
+        self.variables_tab = ttk.Frame(self.notebook)
+        self.notebook.add(self.variables_tab, text="Template Variables")
+        self._create_variables_view(self.variables_tab)
+
         # Button panel
         button_panel = ttk.Frame(content)
         button_panel.pack(fill=tk.X)
@@ -178,6 +183,87 @@ class MarkerCatalogDialog(tk.Toplevel):
         # Bind double-click to edit
         self.string_tree.bind('<Double-Button-1>', lambda e: self._edit_selected())
 
+    def _create_variables_view(self, parent):
+        """Create read-only reference view for template variables."""
+        # Main frame with treeview and info label
+        tree_frame = ttk.Frame(parent)
+        tree_frame.pack(fill=tk.BOTH, expand=True)
+
+        columns = ('variable', 'example', 'source')
+        self.variables_tree = ttk.Treeview(
+            tree_frame,
+            columns=columns,
+            show='headings',
+            selectmode='browse'
+        )
+
+        self.variables_tree.heading('variable', text='Variable')
+        self.variables_tree.heading('example', text='Example')
+        self.variables_tree.heading('source', text='Source')
+
+        self.variables_tree.column('variable', width=150)
+        self.variables_tree.column('example', width=150)
+        self.variables_tree.column('source', width=350)
+
+        # Scrollbar
+        scrollbar = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=self.variables_tree.yview)
+        self.variables_tree.configure(yscrollcommand=scrollbar.set)
+
+        self.variables_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # Configure tag for group headers
+        self.variables_tree.tag_configure('group_header', font=('Arial', 9, 'bold'))
+
+        # Populate the reference data
+        variable_groups = [
+            ("System", [
+                ('{trial_index}', '3', 'Auto-provided (1-indexed trial number)'),
+                ('{response_value}', '7', 'Rating value (1-7), available in rating markers'),
+            ]),
+            ("Auto-extracted", [
+                ('{video_id}', '06283', 'Extracted from VideoPath filename via regex'),
+                ('{video1_id}', '06283', 'Extracted from VideoPath1 filename via regex'),
+                ('{video2_id}', '06283', 'Extracted from VideoPath2 filename via regex'),
+            ]),
+            ("Turn-taking", [
+                ('{condition}', 'turn_taking', 'CSV condition column'),
+                ('{viewer}', '1', 'Viewer participant (1 or 2)'),
+                ('{role_p1}', 'viewer', 'P1 role (viewer/observer/joint)'),
+                ('{role_p2}', 'observer', 'P2 role (viewer/observer/joint)'),
+                ('{p1_mode}', 'video', 'P1 display mode (video/instruction/blank)'),
+                ('{p2_mode}', 'instruction', 'P2 display mode'),
+            ]),
+            ("CSV columns", [
+                ('{affect}', 'highV_highA', 'Any column from your CSV becomes a variable'),
+                ('{video1} / {video2}', r'C:\...\video.mp4', 'Video path aliases'),
+            ]),
+        ]
+
+        for group_name, variables in variable_groups:
+            # Insert group header as a row
+            self.variables_tree.insert('', 'end', values=(
+                f'--- {group_name} ---', '', ''
+            ), tags=('group_header',))
+
+            # Insert variables
+            for var_name, example, source in variables:
+                self.variables_tree.insert('', 'end', values=(
+                    var_name, example, source
+                ))
+
+        # Info label below treeview
+        info_label = ttk.Label(
+            parent,
+            text="Any column in your trial list CSV automatically becomes a {variable}. "
+                 "The variables above are commonly used; your CSV may have additional columns.",
+            font=("Arial", 8),
+            foreground="gray",
+            wraplength=750,
+            justify=tk.LEFT
+        )
+        info_label.pack(fill=tk.X, padx=5, pady=(5, 5))
+
     def _load_catalog_data(self):
         """Load marker definitions from catalog into tree views."""
         # Clear existing items
@@ -212,7 +298,10 @@ class MarkerCatalogDialog(tk.Toplevel):
         current_tab = self.notebook.select()
         tab_text = self.notebook.tab(current_tab, "text")
 
-        if tab_text == "Integer Markers":
+        if tab_text == "Template Variables":
+            # Read-only tab, no marker selection
+            return None, None
+        elif tab_text == "Integer Markers":
             selection = self.integer_tree.selection()
             if not selection:
                 return None, None
@@ -247,6 +336,7 @@ class MarkerCatalogDialog(tk.Toplevel):
     def _add_integer_marker(self):
         """Add a new integer marker definition."""
         dialog = AddIntegerMarkerDialog(self)
+        dialog.wait_window()
         if dialog.result:
             try:
                 # Create MarkerDefinition from dialog result
@@ -259,13 +349,13 @@ class MarkerCatalogDialog(tk.Toplevel):
                 )
                 self.catalog.add_definition(marker_def)
                 self._load_catalog_data()
-                messagebox.showinfo("Success", "Integer marker added successfully.", parent=self)
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to add marker: {e}", parent=self)
 
     def _add_string_marker(self):
         """Add a new string marker definition."""
         dialog = AddStringMarkerDialog(self)
+        dialog.wait_window()
         if dialog.result:
             try:
                 # Create MarkerDefinition from dialog result
@@ -277,7 +367,6 @@ class MarkerCatalogDialog(tk.Toplevel):
                 )
                 self.catalog.add_definition(marker_def)
                 self._load_catalog_data()
-                messagebox.showinfo("Success", "String marker added successfully.", parent=self)
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to add marker: {e}", parent=self)
 
@@ -293,6 +382,7 @@ class MarkerCatalogDialog(tk.Toplevel):
         if marker_type == 'integer':
             original_key = marker_def.code if marker_def.code else marker_def.template_pattern
             dialog = AddIntegerMarkerDialog(self, marker_def)
+            dialog.wait_window()
             if dialog.result:
                 try:
                     # Create updated MarkerDefinition
@@ -305,12 +395,12 @@ class MarkerCatalogDialog(tk.Toplevel):
                     )
                     self.catalog.update_definition(original_key, updated_def)
                     self._load_catalog_data()
-                    messagebox.showinfo("Success", "Marker updated successfully.", parent=self)
                 except Exception as e:
                     messagebox.showerror("Error", f"Failed to update marker: {e}", parent=self)
         else:  # string
             original_key = marker_def.template_pattern
             dialog = AddStringMarkerDialog(self, marker_def)
+            dialog.wait_window()
             if dialog.result:
                 try:
                     # Create updated MarkerDefinition
@@ -322,7 +412,6 @@ class MarkerCatalogDialog(tk.Toplevel):
                     )
                     self.catalog.update_definition(original_key, updated_def)
                     self._load_catalog_data()
-                    messagebox.showinfo("Success", "Marker updated successfully.", parent=self)
                 except Exception as e:
                     messagebox.showerror("Error", f"Failed to update marker: {e}", parent=self)
 
@@ -351,7 +440,6 @@ class MarkerCatalogDialog(tk.Toplevel):
 
                 self.catalog.remove_definition(key)
                 self._load_catalog_data()
-                messagebox.showinfo("Success", "Marker removed successfully.", parent=self)
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to remove marker: {e}", parent=self)
 
@@ -394,7 +482,7 @@ class MarkerCatalogDialog(tk.Toplevel):
 class AddIntegerMarkerDialog(tk.Toplevel):
     """Dialog for adding/editing an integer marker definition."""
 
-    def __init__(self, parent, marker_def: Optional[IntegerMarkerDefinition] = None):
+    def __init__(self, parent, marker_def: Optional[MarkerDefinition] = None):
         """
         Initialize dialog.
 
@@ -438,7 +526,7 @@ class AddIntegerMarkerDialog(tk.Toplevel):
         # Template (optional)
         ttk.Label(content, text="Template (optional):").grid(row=1, column=0, sticky='w', pady=5)
         self.template_var = tk.StringVar(
-            value=self.marker_def.template if self.marker_def and self.marker_def.template else ""
+            value=self.marker_def.template_pattern if self.marker_def and self.marker_def.template_pattern else ""
         )
         ttk.Entry(content, textvariable=self.template_var, width=30).grid(row=1, column=1, sticky='ew', pady=5)
         ttk.Label(content, text="(e.g., 100#, 300#0$)", font=('Arial', 8), foreground='gray').grid(
@@ -520,7 +608,7 @@ class AddIntegerMarkerDialog(tk.Toplevel):
 class AddStringMarkerDialog(tk.Toplevel):
     """Dialog for adding/editing a string marker definition."""
 
-    def __init__(self, parent, marker_def: Optional[StringMarkerDefinition] = None):
+    def __init__(self, parent, marker_def: Optional[MarkerDefinition] = None):
         """
         Initialize dialog.
 
@@ -554,7 +642,7 @@ class AddStringMarkerDialog(tk.Toplevel):
         # Template (required)
         ttk.Label(content, text="Template (required):").grid(row=0, column=0, sticky='w', pady=5)
         self.template_var = tk.StringVar(
-            value=self.marker_def.template if self.marker_def else ""
+            value=self.marker_def.template_pattern if self.marker_def else ""
         )
         ttk.Entry(content, textvariable=self.template_var, width=30).grid(row=0, column=1, sticky='ew', pady=5)
         ttk.Label(content, text="(e.g., {type}_start)", font=('Arial', 8), foreground='gray').grid(

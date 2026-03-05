@@ -15,6 +15,7 @@ class BlockType(Enum):
     FIXATION = "fixation"
     VIDEO = "video"
     RATING = "rating"
+    BRANCH = "branch"  # Container block with multiple variants
 
 
 # Color scheme for E-Prime style blocks
@@ -23,7 +24,8 @@ BLOCK_COLORS = {
     BlockType.BASELINE: "#F5A623",    # Orange/Yellow
     BlockType.FIXATION: "#7ED321",    # Green
     BlockType.VIDEO: "#D0021B",       # Red
-    BlockType.RATING: "#BD10E0"       # Purple
+    BlockType.RATING: "#BD10E0",      # Purple
+    BlockType.BRANCH: "#2ECC71"       # Emerald green for branch blocks
 }
 
 BLOCK_TEXT_COLOR = {
@@ -31,7 +33,8 @@ BLOCK_TEXT_COLOR = {
     BlockType.BASELINE: "#FFFFFF",
     BlockType.FIXATION: "#FFFFFF",
     BlockType.VIDEO: "#FFFFFF",
-    BlockType.RATING: "#FFFFFF"
+    BlockType.RATING: "#FFFFFF",
+    BlockType.BRANCH: "#FFFFFF"
 }
 
 
@@ -175,6 +178,8 @@ class TimelineBlock:
             return f"Trial {self.trial_index + 1}: Video"
         elif self.block_type == BlockType.RATING:
             return f"Trial {self.trial_index + 1}: Rating"
+        elif self.block_type == BlockType.BRANCH:
+            return "Branch Block"
         return ""
 
     def _get_duration_text(self) -> str:
