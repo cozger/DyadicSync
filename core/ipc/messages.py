@@ -62,7 +62,9 @@ class ProgressMessage(IPCMessage):
 
     def __init__(self, current_block: int, total_blocks: int,
                  block_name: str, trial: Optional[int] = None,
-                 total_trials: Optional[int] = None):
+                 total_trials: Optional[int] = None,
+                 current_run: Optional[int] = None,
+                 total_runs: Optional[int] = None):
         """
         Create progress message.
 
@@ -72,6 +74,8 @@ class ProgressMessage(IPCMessage):
             block_name: Name of current block
             trial: Current trial within block (optional)
             total_trials: Total trials in current block (optional)
+            current_run: Current run within branch block (1-based, optional)
+            total_runs: Total runs in branch block (optional)
         """
         super().__init__(
             type=MessageType.PROGRESS,
@@ -80,7 +84,9 @@ class ProgressMessage(IPCMessage):
                 'total_blocks': total_blocks,
                 'block_name': block_name,
                 'trial': trial,
-                'total_trials': total_trials
+                'total_trials': total_trials,
+                'current_run': current_run,
+                'total_runs': total_runs
             }
         )
 

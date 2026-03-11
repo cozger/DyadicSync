@@ -355,6 +355,8 @@ class ExecutionProgressDialog(tk.Toplevel):
         block_text = f"Block: {data['current_block']}/{data['total_blocks']}"
         if data.get('block_name'):
             block_text += f" - {data['block_name']}"
+        if data.get('current_run') and data.get('total_runs'):
+            block_text += f"  (Run {data['current_run']}/{data['total_runs']})"
         self.block_label.config(text=block_text)
 
         # Update progress bar

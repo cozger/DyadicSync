@@ -63,6 +63,19 @@ class BranchBlock:
         self._current_run_index: int = 0
         self._completed_runs: List[Dict] = []
 
+    def get_run_progress(self) -> Optional[Dict[str, Any]]:
+        """Get current run progress within this branch block.
+
+        Returns:
+            Dict with current_run (1-based) and total_runs, or None if not executing.
+        """
+        if self._run_plan is None:
+            return None
+        return {
+            'current_run': self._current_run_index + 1,
+            'total_runs': len(self._run_plan)
+        }
+
     def add_variant(self, variant: Block, index: Optional[int] = None):
         """
         Add a variant block.

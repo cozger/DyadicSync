@@ -85,7 +85,9 @@ def run_experiment_subprocess(
                 msg = ProgressMessage(
                     current_block=prog['current_block'],
                     total_blocks=prog['total_blocks'],
-                    block_name=prog['current_block_name']
+                    block_name=prog['current_block_name'],
+                    current_run=prog.get('current_run'),
+                    total_runs=prog.get('total_runs')
                 )
                 progress_queue.put(msg.to_dict())
             except Exception as e:

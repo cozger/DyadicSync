@@ -386,13 +386,24 @@ class Experiment:
         total_blocks = len(self.timeline.blocks)
         current_block = self.current_block_index + 1 if self.current_block_index < total_blocks else total_blocks
 
-        return {
+        progress = {
             'current_block': current_block,
             'total_blocks': total_blocks,
             'current_block_name': self.timeline.blocks[self.current_block_index].name if total_blocks > 0 else '',
             'paused': self.paused.is_set(),
             'aborted': self.aborted.is_set()
         }
+
+        # Include run-level progress for branch blocks
+        if total_blocks > 0:
+            block = self.timeline.blocks[self.current_block_index]
+            if isinstance(block, BranchBlock):
+                run_progress = block.get_run_progress()
+                if run_progress:
+                    progress['current_run'] = run_progress['current_run']
+                    progress['total_runs'] = run_progress['total_runs']
+
+        return progress
 
     def __repr__(self):
         return (
