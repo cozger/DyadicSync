@@ -114,9 +114,11 @@ class Experiment:
             self.device_manager.keyboard_device_p1 = metadata['keyboard_device_1_path']
         if metadata.get('keyboard_device_2_path'):
             self.device_manager.keyboard_device_p2 = metadata['keyboard_device_2_path']
+        self.device_manager.intercept_keyboards = metadata.get('intercept_keyboards', False)
 
         if self.device_manager.keyboard_device_p1 and self.device_manager.keyboard_device_p2:
-            print(f"[Experiment] Keyboard routing: Both keyboards configured (unified key mode)")
+            intercept_str = " + input isolation ON" if self.device_manager.intercept_keyboards else ""
+            print(f"[Experiment] Keyboard routing: Both keyboards configured (unified key mode{intercept_str})")
         elif self.device_manager.keyboard_device_p1 or self.device_manager.keyboard_device_p2:
             print(f"[Experiment] WARNING: Only one keyboard configured - routing disabled")
         else:

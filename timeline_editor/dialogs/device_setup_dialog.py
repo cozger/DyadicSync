@@ -364,6 +364,45 @@ class DeviceSetupDialog(tk.Toplevel):
             command=lambda: self._clear_keyboard('p2')
         ).pack(side='left', padx=(5, 0))
 
+        # Intercept checkbox (requires Interception driver)
+        intercept_frame = tk.Frame(section)
+        intercept_frame.pack(fill='x', pady=(8, 0))
+
+        # Check if Interception driver is available
+        try:
+            from core.input.interception_listener import _dll  # noqa: F401
+            interception_available = True
+        except (ImportError, OSError):
+            interception_available = False
+
+        self._intercept_var = tk.BooleanVar(
+            value=self.timeline.metadata.get('intercept_keyboards', False) if interception_available else False
+        )
+        intercept_cb = tk.Checkbutton(
+            intercept_frame,
+            text="Isolate participant keyboards (block input from reaching other apps)",
+            variable=self._intercept_var,
+            font=('Arial', 9),
+            state='normal' if interception_available else 'disabled',
+        )
+        intercept_cb.pack(anchor='w')
+
+        if interception_available:
+            hint_text = "Uses Interception driver to block participant keypresses from other apps."
+            hint_color = self.theme_colors['status_inactive']
+        else:
+            hint_text = "Requires Interception driver (not installed). See docs/KEYBOARD_ISOLATION_SETUP.md"
+            hint_color = self.theme_colors.get('status_warning', '#CC8800')
+
+        intercept_hint = tk.Label(
+            intercept_frame,
+            text=hint_text,
+            font=('Arial', 8),
+            fg=hint_color,
+            anchor='w',
+        )
+        intercept_hint.pack(anchor='w', padx=(20, 0))
+
     def _start_keyboard_identify(self, participant: str):
         """Start keyboard identification for a participant."""
         # Cancel any in-progress identification
@@ -937,6 +976,9 @@ class DeviceSetupDialog(tk.Toplevel):
         else:
             self.timeline.metadata.pop('keyboard_device_2_path', None)
             self.timeline.metadata.pop('keyboard_device_2_name', None)
+
+        # Save keyboard intercept setting
+        self.timeline.metadata['intercept_keyboards'] = self._intercept_var.get()
 
         # Mark result as successful
         self.result = True

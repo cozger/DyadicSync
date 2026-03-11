@@ -47,6 +47,7 @@ class DeviceManager:
         # Keyboard routing (optional)
         self.keyboard_device_p1: Optional[str] = None  # Device path string
         self.keyboard_device_p2: Optional[str] = None  # Device path string
+        self.intercept_keyboards: bool = False  # Block participant keyboards from other apps
         self.keyboard_router = None  # KeyboardRouter instance (created in initialize())
 
         # Scanner instance
@@ -70,6 +71,7 @@ class DeviceManager:
             self.keyboard_device_p1 = config['keyboard_device_p1']
         if config.get('keyboard_device_p2'):
             self.keyboard_device_p2 = config['keyboard_device_p2']
+        self.intercept_keyboards = config.get('intercept_keyboards', False)
 
     def initialize(self):
         """
@@ -119,29 +121,36 @@ class DeviceManager:
             self._initialize_keyboard_router()
             return
 
-        # Create fullscreen windows for both participants
-        # Note: set_exclusive_keyboard(False) is critical for multi-window setups
-        # to prevent OpenGL context conflicts on Windows
+        # Create borderless fullscreen windows for both participants
+        # Uses borderless windowed mode instead of exclusive fullscreen so that
+        # focus changes on the control monitor (e.g. taskbar previews) don't
+        # cause participant windows to minimize.
         try:
+            screen_p1 = screens[self.display_p1]
+            screen_p2 = screens[self.display_p2]
+
             print(f"[DeviceManager] Creating window 1 on screen {self.display_p1}...")
             self.window1 = pyglet.window.Window(
-                fullscreen=True,
-                screen=screens[self.display_p1]
+                width=screen_p1.width, height=screen_p1.height,
+                style=pyglet.window.Window.WINDOW_STYLE_BORDERLESS,
+                screen=screen_p1
             )
-            # Disable exclusive keyboard - required for multi-window Pyglet on Windows
-            # Prevents wglChoosePixelFormatARB errors
+            self.window1.set_location(screen_p1.x, screen_p1.y)
             self.window1.set_exclusive_keyboard(False)
             print(f"[DeviceManager] Window 1 created successfully")
 
             print(f"[DeviceManager] Creating window 2 on screen {self.display_p2}...")
             self.window2 = pyglet.window.Window(
-                fullscreen=True,
-                screen=screens[self.display_p2]
+                width=screen_p2.width, height=screen_p2.height,
+                style=pyglet.window.Window.WINDOW_STYLE_BORDERLESS,
+                screen=screen_p2
             )
-            # Disable exclusive keyboard on second window
+            self.window2.set_location(screen_p2.x, screen_p2.y)
             self.window2.set_exclusive_keyboard(False)
             print(f"[DeviceManager] Window 2 created successfully")
 
+            self._exclude_from_peek(self.window1)
+            self._exclude_from_peek(self.window2)
             print(f"[DeviceManager] Both windows created successfully on displays {self.display_p1} and {self.display_p2}")
             self._initialize_keyboard_router()
 
@@ -150,21 +159,28 @@ class DeviceManager:
             print(f"[DeviceManager] Attempting fallback to windowed mode...")
 
             try:
-                # Fallback: Create large windowed mode instead of fullscreen
+                # Fallback: borderless windowed mode
+                screen_p1 = screens[self.display_p1]
+                screen_p2 = screens[self.display_p2]
+
                 self.window1 = pyglet.window.Window(
-                    width=screens[self.display_p1].width,
-                    height=screens[self.display_p1].height,
-                    screen=screens[self.display_p1]
+                    width=screen_p1.width, height=screen_p1.height,
+                    style=pyglet.window.Window.WINDOW_STYLE_BORDERLESS,
+                    screen=screen_p1
                 )
+                self.window1.set_location(screen_p1.x, screen_p1.y)
                 self.window1.set_exclusive_keyboard(False)
 
                 self.window2 = pyglet.window.Window(
-                    width=screens[self.display_p2].width,
-                    height=screens[self.display_p2].height,
-                    screen=screens[self.display_p2]
+                    width=screen_p2.width, height=screen_p2.height,
+                    style=pyglet.window.Window.WINDOW_STYLE_BORDERLESS,
+                    screen=screen_p2
                 )
+                self.window2.set_location(screen_p2.x, screen_p2.y)
                 self.window2.set_exclusive_keyboard(False)
 
+                self._exclude_from_peek(self.window1)
+                self._exclude_from_peek(self.window2)
                 print(f"[DeviceManager] Created windowed mode windows successfully")
                 self._initialize_keyboard_router()
 
@@ -182,6 +198,22 @@ class DeviceManager:
                     f"- Pyglet version is compatible"
                 )
 
+    @staticmethod
+    def _exclude_from_peek(window):
+        """Exclude a window from Windows Aero Peek so it stays visible
+        when taskbar thumbnails are previewed on the control monitor."""
+        try:
+            import ctypes
+            from ctypes import wintypes
+            dwm = ctypes.windll.dwmapi
+            DWMWA_EXCLUDED_FROM_PEEK = 12
+            hwnd = window._hwnd  # Pyglet exposes the native handle
+            val = ctypes.c_int(1)
+            dwm.DwmSetWindowAttribute(hwnd, DWMWA_EXCLUDED_FROM_PEEK,
+                                      ctypes.byref(val), ctypes.sizeof(val))
+        except Exception as e:
+            print(f"[DeviceManager] Could not exclude window from Aero Peek: {e}")
+
     def _initialize_keyboard_router(self):
         """Initialize keyboard router if both device paths are configured."""
         if self.keyboard_device_p1 and self.keyboard_device_p2:
@@ -189,7 +221,8 @@ class DeviceManager:
                 from .input.keyboard_router import KeyboardRouter
                 self.keyboard_router = KeyboardRouter(
                     p1_device_path=self.keyboard_device_p1,
-                    p2_device_path=self.keyboard_device_p2
+                    p2_device_path=self.keyboard_device_p2,
+                    intercept=self.intercept_keyboards,
                 )
                 self.keyboard_router.start()
                 print(f"[DeviceManager] Keyboard router started (per-keyboard input routing enabled)")

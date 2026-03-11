@@ -1,8 +1,9 @@
 """
 Low-level Windows Raw Input API listener via ctypes.
 
-Handles ONLY Win32 Raw Input registration and message processing.
-No participant logic - just device handles and key events.
+Handles Win32 Raw Input registration and message processing for
+per-device keyboard identification. Does NOT block keystrokes —
+for keyboard isolation, see InterceptionListener.
 
 Platform: Windows only (uses user32.dll, kernel32.dll)
 """
@@ -31,6 +32,7 @@ RIDI_DEVICEINFO = 0x2000000B
 
 RI_KEY_MAKE = 0x0000  # Key down
 RI_KEY_BREAK = 0x0001  # Key up
+RI_KEY_E0 = 0x0002    # Extended key (E0 prefix)
 
 WS_EX_NOACTIVATE = 0x08000000
 WS_POPUP = 0x80000000
@@ -148,6 +150,9 @@ class RawInputListener:
     Creates a hidden window in a background thread, registers for keyboard
     raw input with RIDEV_INPUTSINK (receives input even when not focused),
     and dispatches key events with device handles to a callback.
+
+    This class handles device identification only. For keyboard isolation
+    (blocking participant keystrokes from other apps), see InterceptionListener.
     """
 
     def __init__(self, on_key_event: KeyEventCallback):
@@ -333,6 +338,7 @@ class RawInputListener:
                 return
 
             logger.info("RawInputListener: Registered for raw keyboard input")
+
             self._ready.set()
 
             # Message pump
@@ -379,9 +385,10 @@ class RawInputListener:
             flags = raw.data.keyboard.Flags
             is_key_down = (flags & RI_KEY_BREAK) == 0
 
-            # Dispatch to callback
+            # Dispatch to callback (for all devices — router filters by participant)
             if self._on_key_event and device_handle:
                 self._on_key_event(device_handle, vk_code, is_key_down)
 
         except Exception as e:
             logger.error(f"RawInputListener: Error handling WM_INPUT: {e}", exc_info=True)
+

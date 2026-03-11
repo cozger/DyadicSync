@@ -30,6 +30,15 @@ Pillow>=9.0.0              # Image display in GUI components
 dxcam>=0.0.5               # Screen capture for participant monitor previews (Windows only)
 
 # ============================================================================
+# OPTIONAL DEPENDENCIES
+# ============================================================================
+
+# Keyboard isolation (blocks participant input from other apps)
+# Requires Interception driver: github.com/oblitum/Interception
+# See docs/KEYBOARD_ISOLATION_SETUP.md for setup instructions
+# interception-python>=0.1.0  # Uncomment after installing Interception driver
+
+# ============================================================================
 # UTILITY DEPENDENCIES
 # ============================================================================
 

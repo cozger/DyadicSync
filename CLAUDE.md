@@ -491,6 +491,10 @@ The new execution architecture (`core/execution`) encountered and resolved **4 c
 
 **Ratings not captured**: Verify global input listener window is created (lines 41, 46). Check that participant response flags (`p1_responded`, `p2_responded`) are reset in `create_rating_screen()`.
 
+## Code Principles
+
+Always follow **DRY**, **KISS**, and **SOLID** principles when writing or modifying code.
+
 ## Code Modification Guidelines
 
 When modifying this codebase:

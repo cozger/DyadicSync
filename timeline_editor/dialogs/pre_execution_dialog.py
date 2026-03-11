@@ -41,7 +41,7 @@ class SubjectSessionDialog(BaseDialog):
         subject_frame = ttk.Frame(content_frame)
         subject_frame.pack(fill=tk.X, pady=5)
 
-        ttk.Label(subject_frame, text="Subject ID:", width=15, anchor=tk.W).pack(side=tk.LEFT, padx=5)
+        ttk.Label(subject_frame, text="Dyad ID:", width=15, anchor=tk.W).pack(side=tk.LEFT, padx=5)
         subject_entry = ttk.Entry(subject_frame, textvariable=self.subject_var, width=10)
         subject_entry.pack(side=tk.LEFT, padx=5)
 

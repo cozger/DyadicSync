@@ -49,6 +49,9 @@ desktop.ini
 # Users should download FFmpeg separately - see FFMPEG_SETUP.md
 ffmpeg/
 
+# Experiment data output
+data/
+
 # Temporary files
 *.tmp
 *.bak
