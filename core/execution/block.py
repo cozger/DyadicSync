@@ -94,6 +94,11 @@ class Block:
         # Weight for branch block selection (default 1.0)
         self.weight: float = 1.0
 
+        # Role mode for variant blocks inside a BranchBlock.
+        # 'auto' infers from the variant name (existing behavior).
+        # Explicit values: 'p1_viewer', 'p2_viewer', 'joint', 'joint_different'.
+        self.role_mode: str = 'auto'
+
         # Runtime state
         self.current_trial_index: int = 0
         self.completed_trials: List = []  # Will be List[Trial]
@@ -437,6 +442,10 @@ class Block:
         if self.weight != 1.0:
             result['weight'] = self.weight
 
+        # Only include role_mode if it's not the default ('auto')
+        if getattr(self, 'role_mode', 'auto') != 'auto':
+            result['role_mode'] = self.role_mode
+
         return result
 
     @classmethod
@@ -470,5 +479,8 @@ class Block:
 
         # Load weight (for variant blocks in branch blocks)
         block.weight = data.get('weight', 1.0)
+
+        # Load role_mode (for variant blocks in branch blocks)
+        block.role_mode = data.get('role_mode', 'auto')
 
         return block

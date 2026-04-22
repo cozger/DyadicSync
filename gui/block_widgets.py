@@ -1237,6 +1237,32 @@ class VariantListWidget(ttk.LabelFrame):
         self.weight_entry.pack(side=tk.LEFT, padx=5)
         ttk.Button(weight_frame, text="Apply", command=self._apply_weight, width=8).pack(side=tk.LEFT)
 
+        # Role Mode selector for the currently-selected variant.
+        # Joint-Different = both watch, different videos per trial
+        # (auto-deranged from the shared CSV pool).
+        role_frame = ttk.Frame(self)
+        role_frame.pack(fill=tk.X, pady=(5, 0))
+
+        ttk.Label(role_frame, text="Role Mode:").pack(side=tk.LEFT)
+        self._role_mode_labels = [
+            ('auto', 'Auto (from name)'),
+            ('p1_viewer', 'P1 Viewer'),
+            ('p2_viewer', 'P2 Viewer'),
+            ('joint', 'Joint'),
+            ('joint_different', 'Joint-Different'),
+        ]
+        self._role_mode_display_to_value = {d: v for v, d in self._role_mode_labels}
+        self.role_mode_var = tk.StringVar(value='Auto (from name)')
+        self.role_mode_combo = ttk.Combobox(
+            role_frame,
+            textvariable=self.role_mode_var,
+            values=[d for _, d in self._role_mode_labels],
+            state='readonly',
+            width=20
+        )
+        self.role_mode_combo.pack(side=tk.LEFT, padx=5)
+        self.role_mode_combo.bind('<<ComboboxSelected>>', lambda e: self._apply_role_mode())
+
         self._refresh_variant_list()
 
     def _refresh_variant_list(self):
@@ -1251,6 +1277,9 @@ class VariantListWidget(ttk.LabelFrame):
             display = f"[{i+1}] {variant.name} (w={weight}, {phase_count} phases"
             if trial_count > 0:
                 display += f", {trial_count} trials"
+            role_mode = getattr(variant, 'role_mode', 'auto')
+            if role_mode != 'auto':
+                display += f", mode={role_mode}"
             display += ")"
 
             self.variant_listbox.insert(tk.END, display)
@@ -1264,6 +1293,13 @@ class VariantListWidget(ttk.LabelFrame):
             # Update weight entry
             weight = self.branch_block.selection.get_weight(variant.name)
             self.weight_var.set(str(weight))
+            # Update role mode dropdown
+            current_mode = getattr(variant, 'role_mode', 'auto')
+            display = next(
+                (d for v, d in self._role_mode_labels if v == current_mode),
+                'Auto (from name)'
+            )
+            self.role_mode_var.set(display)
             # Notify callback
             if self.on_variant_select:
                 self.on_variant_select(variant)
@@ -1341,6 +1377,28 @@ class VariantListWidget(ttk.LabelFrame):
         self.variant_listbox.selection_clear(0, tk.END)
         self.variant_listbox.selection_set(idx + 1)
         self._selected_variant_index = idx + 1
+
+        if self.on_change:
+            self.on_change()
+
+    def _apply_role_mode(self):
+        """Apply role_mode to the selected variant."""
+        if self._selected_variant_index is None:
+            return
+
+        display = self.role_mode_var.get()
+        new_mode = self._role_mode_display_to_value.get(display, 'auto')
+
+        variant = self.branch_block.variant_blocks[self._selected_variant_index]
+        if getattr(variant, 'role_mode', 'auto') == new_mode:
+            return
+
+        variant.role_mode = new_mode
+        self._refresh_variant_list()
+
+        # Re-select the same variant so the list keeps focus.
+        self.variant_listbox.selection_clear(0, tk.END)
+        self.variant_listbox.selection_set(self._selected_variant_index)
 
         if self.on_change:
             self.on_change()

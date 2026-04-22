@@ -13,6 +13,9 @@ from .selection_config import SelectionConfig
 from .trial_list import TrialList
 from .trial import Trial
 
+import os
+import re
+
 
 class BranchBlock:
     """
@@ -128,6 +131,32 @@ class BranchBlock:
         """
         return [v.name for v in self.variant_blocks]
 
+    def _derive_variant_roles(self, variant: Block) -> Tuple[str, str, Optional[str]]:
+        """
+        Return (role_p1, role_p2, condition) for a variant.
+
+        Honors the explicit `role_mode` field when set; otherwise falls back
+        to the legacy substring match on `variant.name`.
+        """
+        mode = getattr(variant, 'role_mode', 'auto')
+
+        if mode == 'p1_viewer':
+            return ('viewer', 'observer', None)
+        if mode == 'p2_viewer':
+            return ('observer', 'viewer', None)
+        if mode == 'joint':
+            return ('joint', 'joint', None)
+        if mode == 'joint_different':
+            return ('joint', 'joint', 'joint_different')
+
+        # 'auto' (or unknown): fall back to name-based inference.
+        n = variant.name.lower()
+        if 'p1' in n and 'viewer' in n:
+            return ('viewer', 'observer', None)
+        if 'p2' in n and 'viewer' in n:
+            return ('observer', 'viewer', None)
+        return ('joint', 'joint', None)
+
     def get_effective_runs(self) -> int:
         """
         Calculate total runs from trial lists if not explicitly set.
@@ -201,6 +230,54 @@ class BranchBlock:
             else:
                 variant_trials[i] = []
 
+        # Pre-compute derangement pairs for joint-different variants.
+        # For each joint-different variant, build a list of (p1_video, p2_video)
+        # pairs from the shared trial list's video pool, sized to match the
+        # number of runs the schedule allocates to that variant.
+        variant_derangement: Dict[int, List[Tuple[str, str]]] = {}
+        variant_derangement_idx: Dict[int, int] = {}
+        for i, variant in enumerate(self.variant_blocks):
+            _, _, condition = self._derive_variant_roles(variant)
+            if condition != 'joint_different':
+                continue
+
+            allocated_runs = schedule.count(i)
+            if allocated_runs == 0:
+                continue
+
+            pool = [
+                t.data.get('video1')
+                for t in (self.trial_list.trials if self.trial_list else [])
+                if t.data.get('video1')
+            ]
+            if not pool:
+                print(f"[BranchBlock] WARNING: variant '{variant.name}' is "
+                      f"joint-different but shared trial list has no video1 entries; "
+                      f"generated pairs will be empty")
+                variant_derangement[i] = []
+                variant_derangement_idx[i] = 0
+                continue
+
+            from utilities.video_derangement import derange_pool
+            pairs = derange_pool(pool, allocated_runs, seed)
+            variant_derangement[i] = pairs
+            variant_derangement_idx[i] = 0
+            print(f"[BranchBlock] Derangement for variant '{variant.name}': "
+                  f"{len(pairs)} pairs from pool of {len(set(pool))} unique videos")
+
+        # Regex for recomputing video IDs on overridden paths (matches
+        # TrialList._normalize_trial_data default).
+        video_id_regex = (
+            self.trial_list.video_id_regex if self.trial_list else r'^[A-Za-z]+'
+        )
+
+        def _extract_video_id(path: str) -> Optional[str]:
+            if not isinstance(path, str) or not path:
+                return None
+            name = os.path.splitext(os.path.basename(path))[0]
+            vid = re.sub(video_id_regex, '', name)
+            return vid if vid else name
+
         # Track per-variant and shared trial indices
         variant_trial_idx = {i: 0 for i in range(len(self.variant_blocks))}
         shared_trial_idx = 0
@@ -209,8 +286,36 @@ class BranchBlock:
         run_plan = []
         for run_idx, variant_idx in enumerate(schedule):
             variant = self.variant_blocks[variant_idx]
+            role_p1, role_p2, condition = self._derive_variant_roles(variant)
 
-            if variant.trial_list and variant_trials[variant_idx]:
+            if condition == 'joint_different':
+                # Joint-different: override video paths with a derangement pair.
+                # Keep other shared-trial metadata (e.g., custom marker flags)
+                # from whatever shared trial happens to index this slot, so
+                # authoring workflows that attach per-trial metadata still work.
+                if shared_trials and shared_trial_idx < len(shared_trials):
+                    trial_data = shared_trials[shared_trial_idx].data.copy()
+                    shared_trial_idx += 1
+                else:
+                    trial_data = {}
+
+                pairs = variant_derangement.get(variant_idx, [])
+                pair_pos = variant_derangement_idx.get(variant_idx, 0)
+                if pair_pos < len(pairs):
+                    p1_vid, p2_vid = pairs[pair_pos]
+                    variant_derangement_idx[variant_idx] = pair_pos + 1
+                    trial_data['video1'] = p1_vid
+                    trial_data['video2'] = p2_vid
+                    # Recompute IDs to match the overridden paths.
+                    p1_id = _extract_video_id(p1_vid)
+                    p2_id = _extract_video_id(p2_vid)
+                    if p1_id:
+                        trial_data['video1_id'] = p1_id
+                    if p2_id:
+                        trial_data['video2_id'] = p2_id
+                # else: no pair available → trial_data keeps whatever was there
+                #       (the validator flags this case upstream).
+            elif variant.trial_list and variant_trials[variant_idx]:
                 # Use variant's own trial list
                 if variant_trial_idx[variant_idx] < len(variant_trials[variant_idx]):
                     trial = variant_trials[variant_idx][variant_trial_idx[variant_idx]]
@@ -238,17 +343,11 @@ class BranchBlock:
             trial_data['_variant_index'] = variant_idx
             trial_data['_run_index'] = run_idx
 
-            # Derive role variables from variant name for marker templates
-            variant_lower = variant.name.lower()
-            if 'p1' in variant_lower and 'viewer' in variant_lower:
-                trial_data['role_p1'] = 'viewer'
-                trial_data['role_p2'] = 'observer'
-            elif 'p2' in variant_lower and 'viewer' in variant_lower:
-                trial_data['role_p1'] = 'observer'
-                trial_data['role_p2'] = 'viewer'
-            else:
-                trial_data['role_p1'] = 'joint'
-                trial_data['role_p2'] = 'joint'
+            # Stamp role variables (and condition, when applicable).
+            trial_data['role_p1'] = role_p1
+            trial_data['role_p2'] = role_p2
+            if condition:
+                trial_data['condition'] = condition
 
             run_plan.append((variant_idx, trial_data))
 
@@ -406,6 +505,38 @@ class BranchBlock:
                             f"Variant '{variant.name}' has {available} trials "
                             f"but needs {expected_runs} runs"
                         )
+
+                # Joint-different specific checks: derangement requires a
+                # shared video pool of size >= 2.
+                _, _, condition = self._derive_variant_roles(variant)
+                if condition == 'joint_different' and expected_runs > 0:
+                    if not self.trial_list:
+                        errors.append(
+                            f"Variant '{variant.name}' is joint-different but "
+                            f"the branch has no shared trial list (video pool)."
+                        )
+                    else:
+                        pool = {
+                            t.data.get('video1')
+                            for t in self.trial_list.trials
+                            if t.data.get('video1')
+                        }
+                        pool_size = len(pool)
+                        if pool_size < 2:
+                            errors.append(
+                                f"Variant '{variant.name}' is joint-different but "
+                                f"the shared video pool has {pool_size} unique video(s); "
+                                f"derangement requires at least 2."
+                            )
+                        elif expected_runs > pool_size:
+                            # Warning: pool cycling is allowed per the design,
+                            # but surface it so researchers notice.
+                            errors.append(
+                                f"Warning: variant '{variant.name}' allocated "
+                                f"{expected_runs} runs but the video pool only has "
+                                f"{pool_size} unique videos; videos will repeat "
+                                f"across trials."
+                            )
 
         return errors
 

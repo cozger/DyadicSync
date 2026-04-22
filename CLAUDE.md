@@ -122,6 +122,7 @@ The system supports three viewing conditions that can be mixed within a single b
 1. **Joint** (default): Both participants watch videos simultaneously and rate with same question
 2. **P1 Viewer**: P1 watches video with audio, P2 sees instruction text ("observe" role)
 3. **P2 Viewer**: P2 watches video with audio, P1 sees instruction text ("observe" role)
+4. **Joint-Different**: Both participants watch videos simultaneously, but each sees a *different* video from the shared pool. The system enforces (via a derangement algorithm) that no trial pairs the same video to both participants, and that across the joint-different runs each participant watches the same subset of videos — enabling offline "pseudo-pair" analysis (pairing P1's trial t₁ with P2's trial t₂ when both watched the same video at different times).
 
 **CSV Format for Turn-Taking:**
 ```csv
@@ -147,11 +148,22 @@ When `viewer` column is empty for `turn_taking` trials, the system automatically
 - `{p1_mode}`, `{p2_mode}` - Display mode per participant
 - `{role_p1}`, `{role_p2}` - Role assignment ("viewer", "observer", "joint")
 - `{viewer}` - Viewer participant number (1 or 2)
-- `{condition}` - Trial condition ("turn_taking" or "joint")
+- `{condition}` - Trial condition ("turn_taking" | "joint" | "joint_different")
+
+**Configuring the Joint-Different Variant (BranchBlock):**
+
+The joint-different variant is configured via the `role_mode` field on the variant `Block` (serialized in the timeline JSON) and selectable in the Timeline Editor's variant list ("Role Mode" dropdown).
+
+- Set `role_mode="joint_different"` on the variant to enable derangement-based video pairing.
+- The variant inherits the `VideoPhase` template `{video1}` / `{video2}` — set `participant_1_video="{video1}"` and `participant_2_video="{video2}"`, `display_target="both"`.
+- At `BranchBlock.prepare_execution` time, P1's and P2's video paths are overwritten with pairs from `utilities.video_derangement.derange_pool(...)` using the shared trial list's `video1` column as the pool.
+- If the variant's allocated runs (K) are less than the pool size (N), a random size-K subset is used; `K > N` is allowed but cycles the pool (warning logged).
+- Generated trial_data sets `condition="joint_different"`, `role_p1="joint"`, `role_p2="joint"`; other shared-trial metadata is preserved so custom marker templates still resolve.
+- LSL marker `130#` is pre-registered in the marker catalog for joint-different trial starts.
 
 **Data Output:**
 CSV output includes additional columns:
-- `Condition`: "turn_taking" | "joint"
+- `Condition`: "turn_taking" | "joint" | "joint_different"
 - `Role`: "viewer" | "observer" | "joint"
 - `Viewer`: 1 | 2 | null
 
@@ -160,6 +172,7 @@ CSV output includes additional columns:
 |--------|-------------|
 | 110# | Turn-taking trial # start (P1 viewer) |
 | 120# | Turn-taking trial # start (P2 viewer) |
+| 130# | Joint-different trial # start (both watch, different videos) |
 | 310#0$ | P1 viewer self-report rating |
 | 410#0$ | P1 observer rating |
 | 520#0$ | P2 viewer self-report rating |

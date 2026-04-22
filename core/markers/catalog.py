@@ -89,6 +89,11 @@ class MarkerCatalog:
             MarkerDefinition("Trial Start", "Trial begin (all trials start simultaneously)",
                            template_pattern="100#", code=1000),
 
+            # Joint-different trial start (both participants watch, different videos)
+            MarkerDefinition("Joint-Different Trial Start",
+                           "Joint-different trial start (both watch, different videos per participant)",
+                           template_pattern="130#", code=1300),
+
             # Video end markers (template-based, participant-specific)
             MarkerDefinition("P1 Video End", "Video playback end for participant 1",
                            template_pattern="210#", code=2100),

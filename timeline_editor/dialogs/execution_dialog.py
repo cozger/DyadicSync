@@ -289,7 +289,7 @@ class ExecutionProgressDialog(tk.Toplevel):
                     
                     # Start LabRecorder if enabled and not already started
                     if (hasattr(self, 'labrecorder_enabled') and self.labrecorder_enabled and 
-                        self.subject_id != 0 and self.session != 0):
+                        str(self.subject_id) != "0" and self.session != 0):
                         if not hasattr(self, 'labrecorder_started') or not self.labrecorder_started:
                             print("[GUI] Starting LabRecorder now that LSL outlet exists...")
                             self._start_labrecorder(self.labrecorder_host, self.labrecorder_port)
@@ -494,7 +494,7 @@ class ExecutionProgressDialog(tk.Toplevel):
                     foreground="orange"
                 )
                 self.labrecorder_label.update_idletasks()  # Force GUI update
-                print(f"[GUI] LabRecorder started: sub-{self.subject_id:03d}_ses-{self.session:02d}_{task_name}.xdf")
+                print(f"[GUI] LabRecorder started: sub-{self.subject_id}_ses-{self.session:02d}_{task_name}.xdf")
 
                 # Wait for LabRecorder to fully initialize recording
                 # This ensures the recording is stable before headset marker (9161/9162) is sent

@@ -59,7 +59,7 @@ class Experiment:
         self.aborted: threading.Event = threading.Event()
 
         # Subject/session info for data collection
-        self.subject_id: Optional[int] = None
+        self.subject_id: Optional[str] = None
         self.session: Optional[int] = None
         self.headset_selection: Optional[str] = None  # 'B16' or 'B1A'
 
@@ -129,12 +129,12 @@ class Experiment:
         if output_dir:
             self.data_collector.output_directory = output_dir
 
-    def set_subject_info(self, subject_id: int, session: int):
+    def set_subject_info(self, subject_id: str, session: int):
         """
         Set subject and session information for data collection.
 
         Args:
-            subject_id: Subject identifier (0 to disable data saving)
+            subject_id: Subject identifier ("0" to disable data saving)
             session: Session number (0 to disable data saving)
         """
         self.subject_id = subject_id

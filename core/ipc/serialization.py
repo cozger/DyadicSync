@@ -17,7 +17,7 @@ class ExperimentConfig:
     for transmission to subprocess via multiprocessing Queue.
     """
 
-    def __init__(self, timeline: Timeline, subject_id: int, session: int,
+    def __init__(self, timeline: Timeline, subject_id: str, session: int,
                  headset: str, output_dir: str,
                  labrecorder_enabled: bool = False,
                  labrecorder_host: str = 'localhost',
@@ -28,7 +28,7 @@ class ExperimentConfig:
 
         Args:
             timeline: Timeline object with experiment structure
-            subject_id: Subject identifier (0 = disable saving)
+            subject_id: Subject identifier (alphanumeric, "0" = disable saving)
             session: Session number (0 = disable saving)
             headset: Headset selection ('B16' or 'B1A')
             output_dir: Directory for data output

@@ -37,7 +37,7 @@ class DataCollector:
         self.participant_data: List[Dict[str, Any]] = []
 
         # Subject/session info for filename generation
-        self.subject_id: Optional[int] = None
+        self.subject_id: Optional[str] = None
         self.session: Optional[int] = None
         self.data_saving_enabled: bool = True
 
@@ -46,19 +46,19 @@ class DataCollector:
 
         print(f"[DataCollector] Initialized (output: {output_dir}/{experiment_name})")
 
-    def set_subject_info(self, subject_id: int, session: int):
+    def set_subject_info(self, subject_id: str, session: int):
         """
         Set subject and session information for filename generation.
 
         Args:
-            subject_id: Subject identifier (0 to disable data saving)
+            subject_id: Subject identifier ("0" to disable data saving)
             session: Session number (0 to disable data saving)
         """
         self.subject_id = subject_id
         self.session = session
 
         # Disable data saving if either is 0
-        if subject_id == 0 or session == 0:
+        if str(subject_id) == "0" or session == 0:
             self.data_saving_enabled = False
             print("[DataCollector] Data saving DISABLED (subject_id or session = 0)")
         else:
@@ -77,7 +77,7 @@ class DataCollector:
         """
         if self.subject_id is not None and self.session is not None:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"sub-{self.subject_id:03d}_ses-{self.session:02d}_{timestamp}_{suffix}.csv"
+            filename = f"sub-{self.subject_id}_ses-{self.session:02d}_{timestamp}_{suffix}.csv"
         else:
             filename = f"{self.experiment_name}_{suffix}.csv"
 

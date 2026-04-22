@@ -194,7 +194,7 @@ class LabRecorderController:
 
     def start_recording(
         self,
-        subject_id: int,
+        subject_id: str,
         session: int,
         task_name: str,
         output_dir: str,
@@ -207,11 +207,11 @@ class LabRecorderController:
         IMPORTANT: Pre-verifies LSL streams exist before attempting recording.
         This prevents empty recordings caused by LabRecorder not finding any streams.
 
-        Filename format: sub-{ID:03d}_ses-{session:02d}_{task}.xdf
+        Filename format: sub-{ID}_ses-{session:02d}_{task}.xdf
         Example: sub-001_ses-01_DyadicVideoSync.xdf
 
         Args:
-            subject_id: Subject/participant pair ID (e.g., 1, 2, 3)
+            subject_id: Subject/participant pair ID (e.g., "1", "AB01", "dyad-3")
             session: Session number (e.g., 1, 2, 3)
             task_name: Task/experiment name (e.g., 'DyadicVideoSync')
             output_dir: Directory path for output file
@@ -311,7 +311,7 @@ class LabRecorderController:
         # Format filename using LabRecorder template syntax
         filename_cmd = (
             f"filename {{root:{output_dir}}} "
-            f"{{participant:sub-{subject_id:03d}}} "
+            f"{{participant:sub-{subject_id}}} "
             f"{{session:ses-{session:02d}}} "
             f"{{task:{task_name}}}"
         )
@@ -338,10 +338,10 @@ class LabRecorderController:
         self._is_recording = True
         logger.info(
             f"LabRecorder recording started: "
-            f"sub-{subject_id:03d}_ses-{session:02d}_{task_name}.xdf"
+            f"sub-{subject_id}_ses-{session:02d}_{task_name}.xdf"
         )
         print(f"[LabRecorder] ✓ Recording started successfully!")
-        print(f"[LabRecorder] Output file: sub-{subject_id:03d}_ses-{session:02d}_{task_name}.xdf")
+        print(f"[LabRecorder] Output file: sub-{subject_id}_ses-{session:02d}_{task_name}.xdf")
         print(f"[LabRecorder] Verify LabRecorder UI shows selected streams (should not be empty!)")
         return True
 

@@ -16,6 +16,13 @@
       "marker_type": "integer"
     },
     {
+      "name": "Joint-Different Trial Start",
+      "description": "Joint-different trial start (both watch, different videos per participant)",
+      "template_pattern": "130#",
+      "code": 1300,
+      "marker_type": "integer"
+    },
+    {
       "name": "P1 Video End",
       "description": "Video playback end for participant 1",
       "template_pattern": "210#",
