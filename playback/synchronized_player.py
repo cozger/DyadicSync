@@ -9,6 +9,7 @@ import threading
 import time
 import os
 import io
+import sys
 from typing import Optional
 import sounddevice as sd
 import soundfile as sf
@@ -16,8 +17,44 @@ import ffmpeg
 import pyglet
 from config.ffmpeg_config import get_ffmpeg_cmd
 
+# --- StimulusPlayer ABC import (YQP integration) ---------------------------
+# When SynchronizedPlayer is driven by YQP's refactored SyncEngine (Phase 1
+# benchmark baseline), we need to inherit from YQP's StimulusPlayer ABC.
+# DyadicSync is standalone and does not list YQP as a dependency, so:
+#   1. Try to import StimulusPlayer from YQP's package.
+#   2. If YQP_PATH env var is set or the default YQP path exists on disk,
+#      add it to sys.path and retry.
+#   3. If the import still fails, fall back to a local no-op stub so the
+#      standalone app keeps running without YQP installed.
+try:
+    from core.dyadicsync.stimulus.base import StimulusPlayer  # type: ignore
+except ImportError:
+    _yqp_path = os.environ.get("YQP_PATH")
+    if not _yqp_path:
+        _default_yqp = r"C:\Users\synchrony\Desktop\YQP"
+        if os.path.isdir(_default_yqp):
+            _yqp_path = _default_yqp
+    if _yqp_path and os.path.isdir(_yqp_path) and _yqp_path not in sys.path:
+        sys.path.insert(0, _yqp_path)
+    try:
+        from core.dyadicsync.stimulus.base import StimulusPlayer  # type: ignore
+    except ImportError:
+        # Fallback stub — keeps standalone DyadicSync runnable without YQP.
+        from abc import ABC
 
-class SynchronizedPlayer:
+        class StimulusPlayer(ABC):  # type: ignore[no-redef]
+            """Local no-op stub mirroring YQP's StimulusPlayer ABC.
+
+            Used only when YQP is not importable. Declares no abstract
+            methods so SynchronizedPlayer instantiation still works in
+            the standalone app.
+            """
+
+            pass
+# ---------------------------------------------------------------------------
+
+
+class SynchronizedPlayer(StimulusPlayer):
     """
     Manages video playback and audio extraction for a single participant.
 
@@ -561,6 +598,19 @@ class SynchronizedPlayer:
         else:
             print(f"[SyncPlayer] Armed with timestamp {sync_timestamp:.6f} "
                   f"(device {self.audio_device_index}, no audio)")
+
+    def play(self) -> None:
+        """
+        StimulusPlayer ABC entry point — delegates to ``trigger_playback()``.
+
+        YQP's refactored SyncEngine calls ``player.play()`` inside the
+        scheduler-dispatched callback at the exact sync timestamp. For the
+        Pyglet-backed standalone baseline, the equivalent action is
+        ``trigger_playback()`` (which schedules the armed timestamp via
+        pyglet.clock). No behavior change — this is a thin alias to satisfy
+        the abstract-method contract.
+        """
+        self.trigger_playback()
 
     def trigger_playback(self):
         """
